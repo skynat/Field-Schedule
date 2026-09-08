@@ -1,0 +1,6 @@
+Flask==3.0.3
+gunicorn==22.0.0
+# For SAML 2.0 SSO (see README.md "Login: SAML 2.0"), add when you wire it up:
+# python3-saml==1.16.0
+# xmlsec is a native dependency of python3-saml — install libxml2-dev/libxmlsec1-dev
+# (or your OS equivalent) before `pip install python3-saml`.
