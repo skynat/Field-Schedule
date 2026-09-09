@@ -134,6 +134,35 @@ statement, which throws `Cannot use import statement outside a module`
 the instant it hits a plain `<script>` tag. `build.js` already pins this
 via `runtime: "classic"`; don't remove that option.
 
+## Database migrations
+
+Schema changes live as numbered files in `server/migrations/` (e.g.
+`0001_initial.sql`, `0002_add_notes_and_links.sql`), applied in order and
+tracked in a `schema_migrations` table so re-running is always safe —
+anything already applied is skipped.
+
+- **Local dev:** `python app.py` brings the database fully up to date on
+  every start (including creating it from nothing on a first run). Nothing
+  extra to do.
+- **Production:** run migrations as an explicit step, separate from
+  starting the app server:
+  ```
+  cd server
+  python migrate.py            # applies anything pending
+  python migrate.py --check    # exits 1 if something's pending, applies nothing — use in a deploy script/CI gate
+  ```
+  `app.py` deliberately does **not** auto-apply migrations when gunicorn
+  imports it (`app:app`) — only the `python app.py` dev path does. This
+  avoids multiple gunicorn workers racing to apply the same migration
+  concurrently at boot, and it keeps schema changes an explicit, reviewable
+  step in your deploy process rather than something that silently happens
+  the moment a server process starts.
+
+**Adding a new migration:** once a migration has shipped (i.e. it might
+already be applied on someone's database), don't edit it — add a new
+numbered file instead. Editing an already-applied migration does nothing
+on databases that already ran it, which is a much worse bug than it sounds.
+
 ## Data model / API reference
 
 The backend exposes a small REST API over SQLite:
@@ -158,12 +187,17 @@ the UI uses) is:
     "locations": ["North Yard"],
     "types": ["Install"],
     "workers": ["J. Martinez", "A. Smith"],
-    "approvedBy": []
+    "approvedBy": [],
+    "notes": { "format": "text", "content": "Bring extra conduit" },
+    "links": [{ "label": "Site plan", "url": "https://example.com/plan.pdf", "description": "Marked-up PDF" }]
   }
 ]
 ```
 
 `locations`/`types`/`workers`/`approvedBy` are optional and default to `[]`.
+`notes` is optional (`format` is one of `text`/`markdown`/`json`/`csv`,
+defaulting to `text`); `links` is an optional array where each entry needs
+a `url` — `label` defaults to the URL itself, `description` defaults to `""`.
 The endpoint returns `{"added": [...created event objects], "errors": [...per-row messages]}`
 — rows that fail validation are skipped, not fatal to the whole batch.
 
@@ -177,6 +211,30 @@ through the same pattern: update the UI immediately, then fire the matching
 API call in the background. Dragging/resizing a block updates the UI on
 every mouse-move for responsiveness but only sends **one** API call when
 you release the mouse, not one per pixel moved.
+
+## Offline copies (no server access needed)
+
+The 💾 button in the toolbar downloads a single HTML file with the current
+schedule embedded in it — React, ReactDOM, xlsx, and the app itself are all
+inlined, so nothing is fetched over the network. Anyone can open that file
+directly (double-click it, no server, works from a USB stick or an email
+attachment) and view or edit the calendar exactly like the live version.
+
+The **"🕐 Offline copy"** badge (instead of Synced/Local only) marks this
+mode: nothing they do in that file is sent anywhere automatically. When
+they're done, they use the existing Export button (CSV/JSON/Excel) to save
+their changes and send that file back to whoever's running the real thing —
+the same export path documented above, just run from a copy instead of the
+live server.
+
+Two things worth knowing: generating the offline copy requires the page to
+already be served by something (Flask or `http.server`) so it can read its
+own `vendor/*.js`/`app.js` files — the *recipient* doesn't need any of that,
+but *you* do, to produce the file in the first place. And because it's a
+one-way handoff (download → edit → export back), it's a good fit for "send
+this to a contractor for feedback" but not a substitute for real multi-user
+sync — two people editing their own offline copies of the same week won't
+merge automatically.
 
 ## Production hosting
 

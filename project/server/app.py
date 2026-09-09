@@ -27,10 +27,11 @@ from pathlib import Path
 
 from flask import Flask, g, jsonify, request, send_from_directory
 
+from migrations_runner import run_migrations
+
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = BASE_DIR.parent
 DB_PATH = os.environ.get("SCHEDULE_DB_PATH", str(BASE_DIR / "schedule.db"))
-SCHEMA_PATH = BASE_DIR / "schema.sql"
 
 app = Flask(__name__, static_folder=str(PROJECT_DIR), static_url_path="")
 
@@ -66,10 +67,9 @@ def close_db(exception=None):
 
 
 def init_db():
+    run_migrations(DB_PATH)
     with sqlite3.connect(DB_PATH) as db:
         db.row_factory = sqlite3.Row
-        db.executescript(SCHEMA_PATH.read_text())
-        db.commit()
         seed_if_empty(db)
 
 
@@ -337,11 +337,16 @@ def set_required_approvers():
 
 
 # ------------------------------------------------------------------ events --
+NOTE_FORMATS = {"text", "json", "csv", "markdown"}
+
+
 def event_row_to_json(r):
     return {
         "id": r["id"], "date": r["date"], "startMinutes": r["start_minutes"], "duration": r["duration"],
         "locations": json.loads(r["locations"]), "types": json.loads(r["types"]),
         "workers": json.loads(r["workers"]), "approvedBy": json.loads(r["approved_by"]),
+        "notes": {"format": r["notes_format"], "content": r["notes_content"]},
+        "links": json.loads(r["links"]),
     }
 
 
@@ -353,7 +358,37 @@ def validate_event_body(body):
         problems.append('"startMinutes" must be an integer between 0 and 1439')
     if not isinstance(body.get("duration"), (int, float)) or body["duration"] <= 0:
         problems.append('"duration" must be a positive number of minutes')
+    notes = body.get("notes")
+    if notes is not None:
+        if not isinstance(notes, dict) or "format" in notes and notes["format"] not in NOTE_FORMATS:
+            problems.append('"notes.format" must be one of: ' + ", ".join(sorted(NOTE_FORMATS)))
+    links = body.get("links")
+    if links is not None:
+        if not isinstance(links, list) or any(not isinstance(l, dict) or not l.get("url") for l in links):
+            problems.append('"links" must be an array of objects each with a "url"')
     return problems
+
+
+def normalize_notes(notes):
+    notes = notes or {}
+    fmt = notes.get("format", "text")
+    if fmt not in NOTE_FORMATS:
+        fmt = "text"
+    return {"format": fmt, "content": str(notes.get("content", ""))}
+
+
+def normalize_links(links):
+    out = []
+    for l in links or []:
+        url = str(l.get("url", "")).strip()
+        if not url:
+            continue
+        out.append({
+            "label": str(l.get("label") or url),
+            "url": url,
+            "description": str(l.get("description") or ""),
+        })
+    return out
 
 
 @app.get("/api/events")
@@ -379,13 +414,16 @@ def create_event():
     if problems:
         return bad_request("; ".join(problems))
     eid = new_id("ev")
+    notes = normalize_notes(body.get("notes"))
+    links = normalize_links(body.get("links"))
     db = get_db()
     db.execute(
-        "INSERT INTO events (id, date, start_minutes, duration, locations, types, workers, approved_by) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO events (id, date, start_minutes, duration, locations, types, workers, approved_by, "
+        "notes_format, notes_content, links) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (eid, body["date"], body["startMinutes"], body["duration"],
          json.dumps(body.get("locations", [])), json.dumps(body.get("types", [])),
-         json.dumps(body.get("workers", [])), json.dumps(body.get("approvedBy", []))),
+         json.dumps(body.get("workers", [])), json.dumps(body.get("approvedBy", [])),
+         notes["format"], notes["content"], json.dumps(links)),
     )
     db.commit()
     row = db.execute("SELECT * FROM events WHERE id = ?", (eid,)).fetchone()
@@ -407,12 +445,16 @@ def update_event(eid):
         "types": body.get("types", json.loads(row["types"])),
         "workers": body.get("workers", json.loads(row["workers"])),
         "approvedBy": body.get("approvedBy", json.loads(row["approved_by"])),
+        "notes": normalize_notes(body["notes"]) if "notes" in body else {"format": row["notes_format"], "content": row["notes_content"]},
+        "links": normalize_links(body["links"]) if "links" in body else json.loads(row["links"]),
     }
     db.execute(
-        "UPDATE events SET date=?, start_minutes=?, duration=?, locations=?, types=?, workers=?, approved_by=? WHERE id=?",
+        "UPDATE events SET date=?, start_minutes=?, duration=?, locations=?, types=?, workers=?, approved_by=?, "
+        "notes_format=?, notes_content=?, links=? WHERE id=?",
         (merged["date"], merged["startMinutes"], merged["duration"],
          json.dumps(merged["locations"]), json.dumps(merged["types"]),
-         json.dumps(merged["workers"]), json.dumps(merged["approvedBy"]), eid),
+         json.dumps(merged["workers"]), json.dumps(merged["approvedBy"]),
+         merged["notes"]["format"], merged["notes"]["content"], json.dumps(merged["links"]), eid),
     )
     db.commit()
     merged["id"] = eid
@@ -432,7 +474,10 @@ def bulk_events():
     """
     Same JSON shape as the frontend's bulk-import box:
     [ { "date": "YYYY-MM-DD", "start": "HH:MM", "duration": 90,
-        "locations": [...], "types": [...], "workers": [...], "approvedBy": [...] } ]
+        "locations": [...], "types": [...], "workers": [...], "approvedBy": [...],
+        "notes": {"format": "text|json|csv|markdown", "content": "..."},
+        "links": [{"label": "...", "url": "...", "description": "..."}] } ]
+    notes and links are optional.
     """
     rows = request.get_json(force=True, silent=True)
     if not isinstance(rows, list):
@@ -465,14 +510,17 @@ def bulk_events():
             continue
 
         eid = new_id("ev")
+        notes = normalize_notes(row.get("notes"))
+        links = normalize_links(row.get("links"))
         db.execute(
-            "INSERT INTO events (id, date, start_minutes, duration, locations, types, workers, approved_by) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO events (id, date, start_minutes, duration, locations, types, workers, approved_by, "
+            "notes_format, notes_content, links) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (eid, row["date"], start_minutes, duration,
              json.dumps([str(x) for x in row.get("locations", [])]),
              json.dumps([str(x) for x in row.get("types", [])]),
              json.dumps([str(x) for x in row.get("workers", [])]),
-             json.dumps([str(x) for x in row.get("approvedBy", [])])),
+             json.dumps([str(x) for x in row.get("approvedBy", [])]),
+             notes["format"], notes["content"], json.dumps(links)),
         )
         added.append({
             "id": eid, "date": row["date"], "startMinutes": start_minutes, "duration": duration,
@@ -480,6 +528,8 @@ def bulk_events():
             "types": [str(x) for x in row.get("types", [])],
             "workers": [str(x) for x in row.get("workers", [])],
             "approvedBy": [str(x) for x in row.get("approvedBy", [])],
+            "notes": notes,
+            "links": links,
         })
     db.commit()
     return jsonify({"added": added, "errors": errors})
@@ -493,10 +543,16 @@ def bulk_events():
 
 
 if __name__ == "__main__":
-    if not Path(DB_PATH).exists():
-        init_db()
-        print(f"Initialized new database at {DB_PATH}")
-    else:
-        # make sure any new tables added since the DB was created still get made
-        init_db()
+    # Dev convenience: `python app.py` always brings the database fully up
+    # to date (creating it from nothing if needed) before serving. This
+    # block does NOT run when gunicorn imports this file as `app:app` —
+    # that's intentional. See README.md ("Database migrations") for why
+    # production deploys should run `python migrate.py` explicitly instead
+    # of relying on migrations firing implicitly on every worker boot.
+    applied = run_migrations(DB_PATH)
+    if applied:
+        print(f"Applied {len(applied)} migration(s): {', '.join(applied)}")
+    with sqlite3.connect(DB_PATH) as db:
+        db.row_factory = sqlite3.Row
+        seed_if_empty(db)
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)

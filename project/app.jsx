@@ -2,11 +2,10 @@
 const { useState, useRef, useMemo, useCallback, useEffect } = React;
 
 function makeIcon(glyph) {
-  return function IconGlyph({ size = 14, color, style, onClick, title }) {
+  return function IconGlyph({ size = 14, color, style, ...rest }) {
     return (
       <span
-        onClick={onClick}
-        title={title}
+        {...rest}
         style={{
           fontSize: size, lineHeight: 1, display: "inline-flex",
           alignItems: "center", justifyContent: "center",
@@ -30,6 +29,9 @@ const Trash2 = makeIcon("\u{1F5D1}");
 const CalendarRange = makeIcon("\u{1F4C5}");
 const ShieldCheck = makeIcon("\u{1F6E1}");
 const ShieldOff = makeIcon("\u26E8");
+const Info = makeIcon("\u24D8");
+const LinkIcon = makeIcon("\u{1F517}");
+const OfflineIcon = makeIcon("\u{1F4BE}");
 
 
 // ---------- constants ----------
@@ -234,9 +236,13 @@ function eventEndDay(ev) {
 
 function seedEvents(monday) {
   return [
-    { id: uid("ev"), date: monday, startMinutes: 8 * 60, duration: 90, locations: ["North Yard"], types: ["Install"], workers: ["J. Martinez", "A. Smith"], approvedBy: [] },
-    { id: uid("ev"), date: addDays(monday, 1), startMinutes: 13 * 60, duration: 60, locations: ["Warehouse 3"], types: ["Maintenance"], workers: ["K. Patel"], approvedBy: ["D. Ford"] },
-    { id: uid("ev"), date: addDays(monday, 2), startMinutes: 23 * 60 + 30, duration: 90, locations: ["Site B - Riverside"], types: ["Inspection"], workers: ["R. Chen"], approvedBy: ["D. Ford", "R. Chen"] },
+    { id: uid("ev"), date: monday, startMinutes: 8 * 60, duration: 90, locations: ["North Yard"], types: ["Install"], workers: ["J. Martinez", "A. Smith"], approvedBy: [],
+      notes: { format: "text", content: "Bring the extra conduit — customer added a run on the north wall." },
+      links: [{ label: "Site plan", url: "https://example.com/site-plan.pdf", description: "Marked-up PDF from the walkthrough" }] },
+    { id: uid("ev"), date: addDays(monday, 1), startMinutes: 13 * 60, duration: 60, locations: ["Warehouse 3"], types: ["Maintenance"], workers: ["K. Patel"], approvedBy: ["D. Ford"],
+      notes: { format: "text", content: "" }, links: [] },
+    { id: uid("ev"), date: addDays(monday, 2), startMinutes: 23 * 60 + 30, duration: 90, locations: ["Site B - Riverside"], types: ["Inspection"], workers: ["R. Chen"], approvedBy: ["D. Ford", "R. Chen"],
+      notes: { format: "text", content: "" }, links: [] },
   ];
 }
 
@@ -281,6 +287,19 @@ function splitTopLevel(str, sep) {
 // { "date": "YYYY-MM-DD", "start": "HH:MM" (24h), "duration": <minutes>,
 //   "locations": [...], "types": [...], "workers": [...], "approvedBy": [...] }
 // locations/types/workers/approvedBy are optional and default to [].
+const NOTE_FORMATS = ["text", "json", "csv", "markdown"];
+function normalizeNotes(notes) {
+  const format = notes && NOTE_FORMATS.includes(notes.format) ? notes.format : "text";
+  const content = notes && notes.content != null ? String(notes.content) : "";
+  return { format, content };
+}
+function normalizeLinks(links) {
+  if (!Array.isArray(links)) return [];
+  return links
+    .filter((l) => l && String(l.url || "").trim())
+    .map((l) => ({ label: String(l.label || l.url).trim(), url: String(l.url).trim(), description: String(l.description || "") }));
+}
+
 function parseBulkEventsJSON(text) {
   let data;
   try {
@@ -305,6 +324,8 @@ function parseBulkEventsJSON(text) {
       else startMinutes = h * 60 + m;
     }
     if (typeof row.duration !== "number" || row.duration <= 0) problems.push('"duration" must be a positive number of minutes');
+    if (row.notes && row.notes.format && !NOTE_FORMATS.includes(row.notes.format)) problems.push('"notes.format" must be one of: ' + NOTE_FORMATS.join(", "));
+    if (row.links && (!Array.isArray(row.links) || row.links.some((l) => !l || !l.url))) problems.push('"links" must be an array of objects each with a "url"');
     if (problems.length) { errors.push(`Row ${i + 1}: ${problems.join("; ")}`); return; }
     added.push({
       id: uid("ev"),
@@ -315,9 +336,53 @@ function parseBulkEventsJSON(text) {
       types: Array.isArray(row.types) ? row.types.map(String) : [],
       workers: Array.isArray(row.workers) ? row.workers.map(String) : [],
       approvedBy: Array.isArray(row.approvedBy) ? row.approvedBy.map(String) : [],
+      notes: normalizeNotes(row.notes),
+      links: normalizeLinks(row.links),
     });
   });
   return { added, errors };
+}
+
+// Accepts either "[label](url)" (the common Markdown link syntax) or a bare
+// URL on its own — in which case the URL doubles as the label.
+function parseLinkSyntax(input) {
+  const trimmed = input.trim();
+  const m = trimmed.match(/^\[(.+?)\]\((\S+?)\)$/);
+  if (m) return { label: m[1].trim(), url: m[2].trim() };
+  return { label: trimmed, url: trimmed };
+}
+
+// Small "i" icon that shows a floating text box on hover (and toggles on
+// click/tap, for touch). Used for per-link descriptions.
+function InlineInfoHover({ text }) {
+  const [open, setOpen] = useState(false);
+  if (!text) return null;
+  return (
+    <span style={{ position: "relative", display: "inline-flex", marginLeft: 4 }}>
+      <Info
+        size={12}
+        color={COLORS.faint}
+        style={{ cursor: "pointer" }}
+        onMouseEnter={() => setOpen(true)}
+        onMouseLeave={() => setOpen(false)}
+        onClick={(e) => { e.stopPropagation(); setOpen((o) => !o); }}
+      />
+      {open && (
+        <div
+          onMouseEnter={() => setOpen(true)}
+          onMouseLeave={() => setOpen(false)}
+          style={{
+            position: "absolute", bottom: "calc(100% + 6px)", left: 0, zIndex: 60,
+            background: COLORS.panel2, border: `1px solid ${COLORS.line}`, borderRadius: 6,
+            padding: "7px 9px", fontSize: 11.5, color: COLORS.text, width: 220,
+            boxShadow: "0 8px 22px rgba(0,0,0,0.45)", whiteSpace: "pre-wrap", lineHeight: 1.4,
+          }}
+        >
+          {text}
+        </div>
+      )}
+    </span>
+  );
 }
 
 function eventMatchesClauses(ev, clauses) {
@@ -477,6 +542,11 @@ function EditEventModal({ ev, allLocations, allTypes, allWorkers, allApprovers, 
   const [start, setStart] = useState(minsToInput(ev.startMinutes));
   const [dur, setDur] = useState(ev.duration);
   const [approvedBy, setApprovedBy] = useState(ev.approvedBy || []);
+  const [notesFormat, setNotesFormat] = useState((ev.notes && ev.notes.format) || "text");
+  const [notesContent, setNotesContent] = useState((ev.notes && ev.notes.content) || "");
+  const [links, setLinks] = useState(ev.links || []);
+  const [linkInput, setLinkInput] = useState("");
+  const [linkDescInput, setLinkDescInput] = useState("");
 
   function minsToInput(m) { return `${pad2(Math.floor(m / 60) % 24)}:${pad2(m % 60)}`; }
 
@@ -542,6 +612,82 @@ function EditEventModal({ ev, allLocations, allTypes, allWorkers, allApprovers, 
             </div>
             {fullyApproved && <div style={{ fontSize: 11, color: COLORS.accent, marginTop: 4 }}>All required approvers have signed off.</div>}
           </div>
+
+          <div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <label style={labelStyle}>Notes</label>
+              <select
+                value={notesFormat}
+                onChange={(e) => setNotesFormat(e.target.value)}
+                style={{ ...inputStyle, width: "auto", padding: "3px 6px", fontSize: 11 }}
+              >
+                <option value="text">Text</option>
+                <option value="markdown">Markdown</option>
+                <option value="json">JSON</option>
+                <option value="csv">CSV</option>
+              </select>
+            </div>
+            <textarea
+              value={notesContent}
+              onChange={(e) => setNotesContent(e.target.value)}
+              placeholder="Anything a worker or approver should know about this block…"
+              rows={4}
+              style={{
+                ...inputStyle, marginTop: 4, resize: "vertical",
+                fontFamily: notesFormat === "json" || notesFormat === "csv" ? "ui-monospace, monospace" : "inherit",
+              }}
+            />
+          </div>
+
+          <div>
+            <label style={labelStyle}>Links</label>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 4 }}>
+              {links.map((l, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5 }}>
+                  <LinkIcon size={11} color={COLORS.faint} />
+                  <a
+                    href={l.url} target="_blank" rel="noopener noreferrer"
+                    style={{ color: "#7FB8E0", textDecoration: "underline", wordBreak: "break-all" }}
+                  >
+                    {l.label}
+                  </a>
+                  <InlineInfoHover text={l.description} />
+                  <X
+                    size={11} color={COLORS.faint}
+                    style={{ cursor: "pointer", marginLeft: "auto" }}
+                    onClick={() => setLinks(links.filter((_, x) => x !== i))}
+                  />
+                </div>
+              ))}
+              {links.length === 0 && <span style={{ fontSize: 12, color: COLORS.faint }}>No links yet</span>}
+            </div>
+            <div style={{ marginTop: 8, padding: 8, background: COLORS.panel2, borderRadius: 6, border: `1px solid ${COLORS.line}` }}>
+              <input
+                value={linkInput}
+                onChange={(e) => setLinkInput(e.target.value)}
+                placeholder="[Site plan](https://example.com/plan.pdf) — or just paste a URL"
+                style={{ ...inputStyle, fontSize: 11.5 }}
+              />
+              <input
+                value={linkDescInput}
+                onChange={(e) => setLinkDescInput(e.target.value)}
+                placeholder="Description (optional) — shown on the info icon"
+                style={{ ...inputStyle, fontSize: 11.5, marginTop: 6 }}
+              />
+              <button
+                style={{ ...ghostBtnStyle, marginTop: 6, fontSize: 11, padding: "5px 10px" }}
+                onClick={() => {
+                  if (!linkInput.trim()) return;
+                  const { label, url } = parseLinkSyntax(linkInput);
+                  setLinks([...links, { label, url, description: linkDescInput.trim() }]);
+                  setLinkInput("");
+                  setLinkDescInput("");
+                }}
+              >
+                <Plus size={12} /> Add link
+              </button>
+            </div>
+          </div>
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", padding: "12px 16px", borderTop: `1px solid ${COLORS.line}` }}>
           <button onClick={() => onDelete(ev.id)} style={dangerBtnStyle}><Trash2 size={13} /> Delete</button>
@@ -550,7 +696,10 @@ function EditEventModal({ ev, allLocations, allTypes, allWorkers, allApprovers, 
             <button
               onClick={() => {
                 const [h, m] = start.split(":").map(Number);
-                onSave(ev.id, { locations: locs, types, workers, startMinutes: h * 60 + m, duration: Math.max(15, dur), approvedBy });
+                onSave(ev.id, {
+                  locations: locs, types, workers, startMinutes: h * 60 + m, duration: Math.max(15, dur), approvedBy,
+                  notes: { format: notesFormat, content: notesContent }, links,
+                });
               }}
               style={primaryBtnStyle}
             >
@@ -586,7 +735,7 @@ function FieldEditor({ title, tone, items, all, onRemove, onAdd }) {
 }
 
 // ---------- Config modal ----------
-function ConfigModal({ users, setUsers, locations, setLocations, workTypes, setWorkTypes, requiredApprovers, setRequiredApprovers, onClose }) {
+function ConfigModal({ users, setUsers, locations, setLocations, workTypes, setWorkTypes, requiredApprovers, setRequiredApprovers, showEventIds, setShowEventIds, onClose }) {
   const [tab, setTab] = useState("users");
   const [newLogin, setNewLogin] = useState("");
   const [newAlias, setNewAlias] = useState("");
@@ -632,7 +781,7 @@ function ConfigModal({ users, setUsers, locations, setLocations, workTypes, setW
           <X size={16} style={{ cursor: "pointer" }} onClick={onClose} />
         </div>
         <div style={{ display: "flex", gap: 4, padding: "10px 16px 0" }}>
-          {["users", "locations", "types", "approvals"].map((t) => (
+          {["users", "locations", "types", "approvals", "view"].map((t) => (
             <button key={t} onClick={() => setTab(t)}
               style={{
                 padding: "6px 12px", borderRadius: "6px 6px 0 0", border: "none", cursor: "pointer",
@@ -800,6 +949,24 @@ function ConfigModal({ users, setUsers, locations, setLocations, workTypes, setW
               )}
             </div>
           )}
+          {tab === "view" && (
+            <div>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: COLORS.text, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={showEventIds}
+                  onChange={(e) => setShowEventIds(e.target.checked)}
+                />
+                Show event ID on calendar blocks
+              </label>
+              <div style={{ fontSize: 11, color: COLORS.faint, marginTop: 6, marginLeft: 24 }}>
+                Prints each block's underlying database ID (e.g. <code>ev_a1b2c3</code>) in small text
+                on the block itself — useful when cross-referencing an export or a support request
+                against what's on screen. This is just a display preference (saved in this browser),
+                not something exported or synced.
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -813,9 +980,18 @@ function ExportModal({ events, requiredApprovers, onClose }) {
   const [filter, setFilter] = useState("");
   const [error, setError] = useState("");
   const [tz, setTz] = useState("local"); // "local" | "utc"
+  const [includeId, setIncludeId] = useState(false);
   const tzName = localTZName();
 
-  function buildRows() {
+  function flattenLinks(links) {
+    return (links || []).map((l) => {
+      let s = `${l.label} (${l.url})`;
+      if (l.description) s += ` \u2014 ${l.description}`;
+      return s;
+    }).join(" | ");
+  }
+
+  function buildRows(structured) {
     const clauses = parseFilterSyntax(filter);
     const fromE = epochDay(from), toE = epochDay(to);
     const useUTC = tz === "utc";
@@ -828,7 +1004,8 @@ function ExportModal({ events, requiredApprovers, onClose }) {
       .map((ev) => {
         const s = fmtInTZ(eventStartDate(ev), useUTC);
         const e = fmtInTZ(eventEndDate(ev), useUTC);
-        return {
+        const base = {
+          ...(includeId ? { id: ev.id } : {}),
           date: s.date,
           start: s.time,
           end: e.time,
@@ -840,6 +1017,14 @@ function ExportModal({ events, requiredApprovers, onClose }) {
           approvedBy: (ev.approvedBy || []).join("; "),
           fullyApproved: isFullyApproved(ev, requiredApprovers) ? "Yes" : "No",
         };
+        return structured
+          ? { ...base, notes: ev.notes || { format: "text", content: "" }, links: ev.links || [] }
+          : {
+              ...base,
+              notesFormat: (ev.notes && ev.notes.format) || "text",
+              notes: (ev.notes && ev.notes.content) || "",
+              links: flattenLinks(ev.links),
+            };
       })
       .sort((a, b) => a.startSort - b.startSort)
       .map(({ startSort, ...r }) => r);
@@ -855,11 +1040,11 @@ function ExportModal({ events, requiredApprovers, onClose }) {
 
   function doExport(kind) {
     try {
-      const rows = buildRows();
+      const rows = buildRows(kind === "json");
       setError("");
       if (rows.length === 0) { setError("No rows match this range and filter."); return; }
       if (kind === "csv") {
-        const headers = ["date", "start", "end", "timezone", "workers", "locations", "types", "approvedBy", "fullyApproved"];
+        const headers = [...(includeId ? ["id"] : []), "date", "start", "end", "timezone", "workers", "locations", "types", "approvedBy", "fullyApproved", "notesFormat", "notes", "links"];
         const csv = [headers.join(",")].concat(
           rows.map((r) => headers.map((h) => `"${String(r[h]).replace(/"/g, '""')}"`).join(","))
         ).join("\n");
@@ -900,6 +1085,10 @@ function ExportModal({ events, requiredApprovers, onClose }) {
               >UTC</button>
             </div>
           </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: COLORS.muted, cursor: "pointer" }}>
+            <input type="checkbox" checked={includeId} onChange={(e) => setIncludeId(e.target.checked)} />
+            Include event ID column
+          </label>
           <div>
             <label style={labelStyle}>Filter</label>
             <input
@@ -936,7 +1125,9 @@ function BulkImportModal({ onImport, onClose }) {
     "locations": ["North Yard"],
     "types": ["Install"],
     "workers": ["J. Martinez", "A. Smith"],
-    "approvedBy": []
+    "approvedBy": [],
+    "notes": { "format": "text", "content": "Bring extra conduit" },
+    "links": [{ "label": "Site plan", "url": "https://example.com/plan.pdf", "description": "Marked-up PDF" }]
   }
 ]`;
 
@@ -962,7 +1153,9 @@ function BulkImportModal({ onImport, onClose }) {
             Paste a JSON array of blocks. Each item needs <code>date</code> ("YYYY-MM-DD"),{" "}
             <code>start</code> ("HH:MM", 24-hour) and <code>duration</code> (minutes).{" "}
             <code>locations</code>, <code>types</code>, <code>workers</code> and <code>approvedBy</code> are
-            optional arrays of names — anything not on file yet in Config still gets added to the block as text.
+            optional arrays of names — anything not on file yet in Config still gets added to the block as text.{" "}
+            <code>notes</code> (<code>{"{format, content}"}</code>, format is text/json/csv/markdown) and{" "}
+            <code>links</code> (array of <code>{"{label, url, description}"}</code>) are also optional.
           </div>
           <textarea
             value={text}
@@ -1003,6 +1196,95 @@ const rowStyle = { display: "flex", justifyContent: "space-between", alignItems:
 const primaryBtnStyle = { display: "flex", alignItems: "center", gap: 6, background: COLORS.accent, color: "#0D1512", border: "none", borderRadius: 7, padding: "7px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer" };
 const ghostBtnStyle = { background: "transparent", color: COLORS.muted, border: `1px solid ${COLORS.line}`, borderRadius: 7, padding: "7px 12px", fontSize: 12, cursor: "pointer" };
 const dangerBtnStyle = { display: "flex", alignItems: "center", gap: 6, background: "transparent", color: COLORS.danger, border: `1px solid ${COLORS.danger}55`, borderRadius: 7, padding: "7px 12px", fontSize: 12, cursor: "pointer" };
+
+// ---------- info popup: full block details on hover ----------
+function BlockInfoPopup({ ev, corner, requiredApprovers, onMouseEnter, onMouseLeave }) {
+  const approvedBy = ev.approvedBy || [];
+  const fullyApproved = isFullyApproved(ev, requiredApprovers);
+  const endDay = eventEndDay(ev);
+  const endMinutes = (ev.startMinutes + ev.duration) % 1440;
+  const timeRange = `${minsToLabel(ev.startMinutes)} \u2013 ${minsToLabel(endMinutes)}`
+    + (endDay !== ev.date ? ` (${fmtDateShort(endDay)})` : "");
+  const hasNotes = ev.notes && ev.notes.content && ev.notes.content.trim();
+
+  const posStyle = corner === "bottom-right"
+    ? { bottom: 16, right: 16 }
+    : { bottom: 16, left: 16 };
+
+  return (
+    <div
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+      style={{
+        position: "fixed", ...posStyle, zIndex: 80, width: 300, maxHeight: "60vh", overflowY: "auto",
+        background: COLORS.panel, border: `1px solid ${COLORS.line}`, borderRadius: 10,
+        boxShadow: "0 16px 36px rgba(0,0,0,0.5)", padding: 14, fontSize: 12.5, color: COLORS.text,
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <div style={{ fontSize: 12, color: COLORS.faint }}>{fmtDateShort(ev.date)}</div>
+        <div style={{ fontSize: 9.5, color: COLORS.faint, fontFamily: "ui-monospace, monospace" }}>{ev.id}</div>
+      </div>
+      <div style={{ fontSize: 14, fontWeight: 600, marginTop: 2 }}>{timeRange}</div>
+
+      {ev.locations.length > 0 && (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ fontSize: 10, color: COLORS.faint }}>LOCATIONS</div>
+          <div style={{ marginTop: 3 }}>{ev.locations.map((l) => <Chip key={l} tone="loc">{l}</Chip>)}</div>
+        </div>
+      )}
+      {ev.types.length > 0 && (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ fontSize: 10, color: COLORS.faint }}>TYPES</div>
+          <div style={{ marginTop: 3 }}>{ev.types.map((t) => <Chip key={t} tone="type">{t}</Chip>)}</div>
+        </div>
+      )}
+      {ev.workers.length > 0 && (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ fontSize: 10, color: COLORS.faint }}>WORKERS</div>
+          <div style={{ marginTop: 3 }}>{ev.workers.map((w) => <Chip key={w} tone="worker">{w}</Chip>)}</div>
+        </div>
+      )}
+
+      <div style={{ marginTop: 8 }}>
+        <div style={{ fontSize: 10, color: COLORS.faint }}>APPROVAL</div>
+        <div style={{ marginTop: 3, color: fullyApproved ? COLORS.accent : approvedBy.length ? COLORS.amber : COLORS.faint }}>
+          {approvedBy.length === 0 ? "No approvals yet" : `Approved by ${approvedBy.join(", ")}`}
+          {fullyApproved && " \u2014 fully approved"}
+        </div>
+      </div>
+
+      {hasNotes && (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ fontSize: 10, color: COLORS.faint }}>NOTES ({ev.notes.format})</div>
+          <div style={{
+            marginTop: 3, whiteSpace: "pre-wrap", fontFamily: ev.notes.format === "json" || ev.notes.format === "csv" ? "ui-monospace, monospace" : "inherit",
+            fontSize: 11.5, lineHeight: 1.4, background: COLORS.panel2, borderRadius: 6, padding: "6px 8px",
+          }}>
+            {ev.notes.content}
+          </div>
+        </div>
+      )}
+
+      {ev.links && ev.links.length > 0 && (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ fontSize: 10, color: COLORS.faint }}>LINKS</div>
+          <div style={{ marginTop: 3, display: "flex", flexDirection: "column", gap: 3 }}>
+            {ev.links.map((l, i) => (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                <LinkIcon size={10} color={COLORS.faint} />
+                <a href={l.url} target="_blank" rel="noopener noreferrer" style={{ color: "#7FB8E0", textDecoration: "underline", wordBreak: "break-all" }}>
+                  {l.label}
+                </a>
+                <InlineInfoHover text={l.description} />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ---------- context create-menu (right click) ----------
 function ContextCreateMenu({ x, y, locations, types, workers, onCreate, onClose }) {
@@ -1054,7 +1336,35 @@ function WorkSchedulePlanner() {
   // Load persisted state on first mount. If nothing answers (e.g. the page
   // was opened directly via `python -m http.server`, with no server/app.py
   // running), silently keep the built-in seed data and work in memory only.
+  const [isSnapshotMode, setIsSnapshotMode] = useState(false);
+
+  // Purely a display preference (not part of the shared schedule data), so
+  // it's kept in this browser via localStorage rather than synced to the API.
+  const [showEventIds, setShowEventIds] = useState(() => {
+    try { return localStorage.getItem("schedule_showEventIds") === "1"; } catch { return false; }
+  });
   useEffect(() => {
+    try { localStorage.setItem("schedule_showEventIds", showEventIds ? "1" : "0"); } catch { /* ignore (private browsing, etc.) */ }
+  }, [showEventIds]);
+
+  useEffect(() => {
+    // A standalone exported copy (see downloadStandaloneSnapshot) embeds its
+    // data directly in the page instead of fetching it from an API. If
+    // that's present, use it and skip the network entirely — this is what
+    // makes the exported file work fully offline via file://.
+    if (typeof window !== "undefined" && window.__SCHEDULE_SNAPSHOT__) {
+      const snap = window.__SCHEDULE_SNAPSHOT__;
+      if (snap.users) setUsers(snap.users);
+      if (snap.locations) setLocations(snap.locations);
+      if (snap.workTypes) setWorkTypes(snap.workTypes);
+      if (snap.requiredApprovers) setRequiredApprovers(snap.requiredApprovers);
+      if (snap.events) setEvents(snap.events);
+      apiAvailableRef.current = false;
+      setApiAvailable(false);
+      setIsSnapshotMode(true);
+      return;
+    }
+
     let cancelled = false;
     (async () => {
       const [u, l, t, ra, ev] = await Promise.all([
@@ -1131,8 +1441,84 @@ function WorkSchedulePlanner() {
   const [configOpen, setConfigOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [bulkImportOpen, setBulkImportOpen] = useState(false);
+  const [snapshotBusy, setSnapshotBusy] = useState(false);
+  const [snapshotError, setSnapshotError] = useState("");
+
+  // Bundles a fully self-contained copy of this app — React/ReactDOM/xlsx
+  // and the compiled app itself, all inlined — with the current schedule
+  // embedded as data, so someone with no access to this server can open
+  // the file directly (file://), view/edit it, and use the regular Export
+  // button to send their changes back as CSV/JSON/Excel. Requires this page
+  // to currently be served (so it can read its own vendor/app.js files);
+  // the resulting downloaded file has no such requirement.
+  function escapeForInlineScript(s) {
+    return s.replace(/<\/script/gi, "<\\/script");
+  }
+  async function downloadStandaloneSnapshot() {
+    setSnapshotBusy(true);
+    setSnapshotError("");
+    try {
+      const [reactJs, reactDomJs, xlsxJs, appJs] = await Promise.all([
+        fetch("vendor/react.production.min.js").then((r) => { if (!r.ok) throw new Error("vendor/react.production.min.js"); return r.text(); }),
+        fetch("vendor/react-dom.production.min.js").then((r) => { if (!r.ok) throw new Error("vendor/react-dom.production.min.js"); return r.text(); }),
+        fetch("vendor/xlsx.full.min.js").then((r) => { if (!r.ok) throw new Error("vendor/xlsx.full.min.js"); return r.text(); }),
+        fetch("app.js").then((r) => { if (!r.ok) throw new Error("app.js"); return r.text(); }),
+      ]);
+      const snapshot = { users, locations, workTypes, requiredApprovers, events, exportedAt: new Date().toISOString() };
+      const snapshotJson = escapeForInlineScript(JSON.stringify(snapshot));
+      const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Field Schedule (offline copy)</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #0A0D10; }
+  #root { height: 100vh; padding: 16px; box-sizing: border-box; color: #E7EBEE; font-family: system-ui, sans-serif; }
+  * { box-sizing: border-box; }
+</style>
+</head>
+<body>
+<div id="root">Loading\u2026</div>
+<script>${escapeForInlineScript(reactJs)}</script>
+<script>${escapeForInlineScript(reactDomJs)}</script>
+<script>${escapeForInlineScript(xlsxJs)}</script>
+<script>window.__SCHEDULE_SNAPSHOT__ = ${snapshotJson};</script>
+<script>${escapeForInlineScript(appJs)}</script>
+</body>
+</html>
+`;
+      const blob = new Blob([html], { type: "text/html" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `field-schedule-offline-${isoDate(new Date())}.html`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setSnapshotError(`Couldn't build the offline copy \u2014 failed to load ${e.message}.`);
+    } finally {
+      setSnapshotBusy(false);
+    }
+  }
   const [editingId, setEditingId] = useState(null);
   const [contextMenu, setContextMenu] = useState(null);
+  const [infoPopup, setInfoPopup] = useState(null); // { id, corner: "bottom-right" | "bottom-left" }
+  const infoCloseTimer = useRef(null);
+  // Coarse-pointer / touch devices don't really have "hover" — tapping a
+  // tiny info icon precisely is fiddly there too, so on those devices the
+  // info icon jumps straight to the edit modal instead of showing a popup.
+  const isTouchDevice = useMemo(() => {
+    if (typeof window === "undefined") return false;
+    return (window.matchMedia && window.matchMedia("(pointer: coarse)").matches) || "ontouchstart" in window;
+  }, []);
+  function openInfoPopup(id, corner) {
+    if (infoCloseTimer.current) { clearTimeout(infoCloseTimer.current); infoCloseTimer.current = null; }
+    setInfoPopup({ id, corner });
+  }
+  function scheduleCloseInfoPopup() {
+    infoCloseTimer.current = setTimeout(() => setInfoPopup(null), 150);
+  }
 
   const [recents, setRecents] = useState({ loc: [], type: [], worker: [] });
   const [selVal, setSelVal] = useState({ loc: null, type: null, worker: null });
@@ -1226,6 +1612,7 @@ function WorkSchedulePlanner() {
     const localEvent = {
       id: uid("ev"), date, startMinutes: snap(startMinutes), duration: MIN_DUR,
       locations: loc ? [loc] : [], types: type ? [type] : [], workers: worker ? [worker] : [], approvedBy: [],
+      notes: { format: "text", content: "" }, links: [],
     };
     setEvents((evs) => [...evs, localEvent]);
     if (apiAvailableRef.current) {
@@ -1416,7 +1803,17 @@ function WorkSchedulePlanner() {
       <div style={{ padding: "12px 16px", borderBottom: `1px solid ${COLORS.line}`, display: "flex", flexDirection: "column", gap: 10 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <div style={{ fontSize: 15, fontWeight: 700, letterSpacing: 0.2, marginRight: 6 }}>Field Schedule</div>
-          {apiAvailable !== null && (
+          {isSnapshotMode ? (
+            <span
+              title="This is an offline copy — nothing here is sent anywhere automatically. Use the Export button when you're done to send your changes back."
+              style={{
+                fontSize: 10, padding: "2px 7px", borderRadius: 10, color: COLORS.amber,
+                border: `1px solid ${COLORS.amber}55`, whiteSpace: "nowrap",
+              }}
+            >
+              {"\u25D1 Offline copy"}
+            </span>
+          ) : apiAvailable !== null && (
             <span
               title={apiAvailable ? "Connected to server/app.py — changes are saved" : "No backend reachable — changes are local to this tab only"}
               style={{
@@ -1426,6 +1823,9 @@ function WorkSchedulePlanner() {
             >
               {apiAvailable ? "\u25CF Synced" : "\u25CB Local only"}
             </span>
+          )}
+          {snapshotError && (
+            <span style={{ fontSize: 10, color: COLORS.danger }}>{snapshotError}</span>
           )}
 
           <div style={{ display: "flex", alignItems: "center", gap: 6, marginLeft: "auto" }}>
@@ -1448,6 +1848,12 @@ function WorkSchedulePlanner() {
           </div>
 
           <IconBtn title="Bulk add work blocks (JSON)" onClick={() => setBulkImportOpen(true)}><Plus size={16} /></IconBtn>
+          <IconBtn
+            title={snapshotBusy ? "Building offline copy\u2026" : "Download an offline copy (view/edit without server access)"}
+            onClick={downloadStandaloneSnapshot}
+          >
+            {snapshotBusy ? <span style={{ fontSize: 10 }}>{"\u2026"}</span> : <OfflineIcon size={15} />}
+          </IconBtn>
           <IconBtn title="Export" onClick={() => setExportOpen(true)}><Download size={16} /></IconBtn>
           <IconBtn title="Configuration" onClick={() => setConfigOpen(true)}><Settings size={16} /></IconBtn>
         </div>
@@ -1563,6 +1969,8 @@ function WorkSchedulePlanner() {
                     const approvedBy = ev.approvedBy || [];
                     const fullyApproved = isFullyApproved(ev, requiredApprovers);
                     const partiallyApproved = !fullyApproved && approvedBy.length > 0;
+                    const hasNotes = !!(ev.notes && ev.notes.content && ev.notes.content.trim());
+                    const hasLinks = !!(ev.links && ev.links.length > 0);
                     return (
                       <div
                         key={ev.id + "_" + date}
@@ -1584,7 +1992,25 @@ function WorkSchedulePlanner() {
                           <span style={{ color: COLORS.faint, fontVariantNumeric: "tabular-nums" }}>
                             {isHomeDay ? minsToLabel(ev.startMinutes) : "\u22EF continued"}
                           </span>
-                          <Pencil size={10} style={{ cursor: "pointer", color: COLORS.faint }} onClick={(e) => { e.stopPropagation(); setEditingId(ev.id); }} />
+                          <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                            {hasNotes && (
+                              <span title="Has notes" style={{ fontSize: 8.5, fontWeight: 700, color: COLORS.amber, border: `1px solid ${COLORS.amber}77`, borderRadius: 3, padding: "0 3px", lineHeight: "11px" }}>N</span>
+                            )}
+                            {hasLinks && (
+                              <span title="Has links" style={{ fontSize: 8.5, fontWeight: 700, color: "#7FB8E0", border: "1px solid #7FB8E077", borderRadius: 3, padding: "0 3px", lineHeight: "11px" }}>L</span>
+                            )}
+                            <Info
+                              size={10} color={COLORS.faint} style={{ cursor: "pointer" }}
+                              onMouseEnter={(e) => {
+                                if (isTouchDevice) return;
+                                const corner = e.clientX < window.innerWidth / 2 ? "bottom-right" : "bottom-left";
+                                openInfoPopup(ev.id, corner);
+                              }}
+                              onMouseLeave={() => { if (!isTouchDevice) scheduleCloseInfoPopup(); }}
+                              onClick={(e) => { e.stopPropagation(); if (isTouchDevice) setEditingId(ev.id); }}
+                            />
+                            <Pencil size={10} style={{ cursor: "pointer", color: COLORS.faint }} onClick={(e) => { e.stopPropagation(); setEditingId(ev.id); }} />
+                          </div>
                         </div>
                         <div style={{ display: "flex", flexWrap: "wrap", marginTop: 2 }}>
                           {ev.locations.map((l) => <Chip key={l} tone="loc">{l}</Chip>)}
@@ -1594,6 +2020,11 @@ function WorkSchedulePlanner() {
                         {approvedBy.length > 0 && (
                           <div style={{ fontSize: 9.5, color: fullyApproved ? COLORS.accent : COLORS.amber, marginTop: 2 }}>
                             Approved: {approvedBy.join(", ")}
+                          </div>
+                        )}
+                        {showEventIds && (
+                          <div style={{ fontSize: 8.5, color: COLORS.faint, fontFamily: "ui-monospace, monospace", marginTop: 2, opacity: 0.8 }}>
+                            {ev.id}
                           </div>
                         )}
                         {!isHomeDay && (
@@ -1639,6 +2070,18 @@ function WorkSchedulePlanner() {
         />
       )}
 
+      {infoPopup && (() => {
+        const popupEvent = events.find((e) => e.id === infoPopup.id);
+        if (!popupEvent) return null;
+        return (
+          <BlockInfoPopup
+            ev={popupEvent} corner={infoPopup.corner} requiredApprovers={requiredApprovers}
+            onMouseEnter={() => openInfoPopup(infoPopup.id, infoPopup.corner)}
+            onMouseLeave={scheduleCloseInfoPopup}
+          />
+        );
+      })()}
+
       {editingEvent && (
         <EditEventModal
           ev={editingEvent}
@@ -1657,6 +2100,7 @@ function WorkSchedulePlanner() {
           locations={locations} setLocations={setLocationsSynced}
           workTypes={workTypes} setWorkTypes={setWorkTypesSynced}
           requiredApprovers={requiredApprovers} setRequiredApprovers={setRequiredApproversSynced}
+          showEventIds={showEventIds} setShowEventIds={setShowEventIds}
           onClose={() => setConfigOpen(false)}
         />
       )}

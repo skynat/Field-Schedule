@@ -10,12 +10,10 @@ function makeIcon(glyph) {
     size = 14,
     color,
     style,
-    onClick,
-    title
+    ...rest
   }) {
     return /*#__PURE__*/React.createElement("span", {
-      onClick: onClick,
-      title: title,
+      ...rest,
       style: {
         fontSize: size,
         lineHeight: 1,
@@ -43,6 +41,9 @@ const Trash2 = makeIcon("\u{1F5D1}");
 const CalendarRange = makeIcon("\u{1F4C5}");
 const ShieldCheck = makeIcon("\u{1F6E1}");
 const ShieldOff = makeIcon("\u26E8");
+const Info = makeIcon("\u24D8");
+const LinkIcon = makeIcon("\u{1F517}");
+const OfflineIcon = makeIcon("\u{1F4BE}");
 
 // ---------- constants ----------
 const HOUR_PX = 52;
@@ -307,7 +308,16 @@ function seedEvents(monday) {
     locations: ["North Yard"],
     types: ["Install"],
     workers: ["J. Martinez", "A. Smith"],
-    approvedBy: []
+    approvedBy: [],
+    notes: {
+      format: "text",
+      content: "Bring the extra conduit — customer added a run on the north wall."
+    },
+    links: [{
+      label: "Site plan",
+      url: "https://example.com/site-plan.pdf",
+      description: "Marked-up PDF from the walkthrough"
+    }]
   }, {
     id: uid("ev"),
     date: addDays(monday, 1),
@@ -316,7 +326,12 @@ function seedEvents(monday) {
     locations: ["Warehouse 3"],
     types: ["Maintenance"],
     workers: ["K. Patel"],
-    approvedBy: ["D. Ford"]
+    approvedBy: ["D. Ford"],
+    notes: {
+      format: "text",
+      content: ""
+    },
+    links: []
   }, {
     id: uid("ev"),
     date: addDays(monday, 2),
@@ -325,7 +340,12 @@ function seedEvents(monday) {
     locations: ["Site B - Riverside"],
     types: ["Inspection"],
     workers: ["R. Chen"],
-    approvedBy: ["D. Ford", "R. Chen"]
+    approvedBy: ["D. Ford", "R. Chen"],
+    notes: {
+      format: "text",
+      content: ""
+    },
+    links: []
   }];
 }
 
@@ -376,6 +396,23 @@ function splitTopLevel(str, sep) {
 // { "date": "YYYY-MM-DD", "start": "HH:MM" (24h), "duration": <minutes>,
 //   "locations": [...], "types": [...], "workers": [...], "approvedBy": [...] }
 // locations/types/workers/approvedBy are optional and default to [].
+const NOTE_FORMATS = ["text", "json", "csv", "markdown"];
+function normalizeNotes(notes) {
+  const format = notes && NOTE_FORMATS.includes(notes.format) ? notes.format : "text";
+  const content = notes && notes.content != null ? String(notes.content) : "";
+  return {
+    format,
+    content
+  };
+}
+function normalizeLinks(links) {
+  if (!Array.isArray(links)) return [];
+  return links.filter(l => l && String(l.url || "").trim()).map(l => ({
+    label: String(l.label || l.url).trim(),
+    url: String(l.url).trim(),
+    description: String(l.description || "")
+  }));
+}
 function parseBulkEventsJSON(text) {
   let data;
   try {
@@ -401,6 +438,8 @@ function parseBulkEventsJSON(text) {
       if (h > 23 || m > 59) problems.push('"start" time is out of range');else startMinutes = h * 60 + m;
     }
     if (typeof row.duration !== "number" || row.duration <= 0) problems.push('"duration" must be a positive number of minutes');
+    if (row.notes && row.notes.format && !NOTE_FORMATS.includes(row.notes.format)) problems.push('"notes.format" must be one of: ' + NOTE_FORMATS.join(", "));
+    if (row.links && (!Array.isArray(row.links) || row.links.some(l => !l || !l.url))) problems.push('"links" must be an array of objects each with a "url"');
     if (problems.length) {
       errors.push(`Row ${i + 1}: ${problems.join("; ")}`);
       return;
@@ -413,13 +452,77 @@ function parseBulkEventsJSON(text) {
       locations: Array.isArray(row.locations) ? row.locations.map(String) : [],
       types: Array.isArray(row.types) ? row.types.map(String) : [],
       workers: Array.isArray(row.workers) ? row.workers.map(String) : [],
-      approvedBy: Array.isArray(row.approvedBy) ? row.approvedBy.map(String) : []
+      approvedBy: Array.isArray(row.approvedBy) ? row.approvedBy.map(String) : [],
+      notes: normalizeNotes(row.notes),
+      links: normalizeLinks(row.links)
     });
   });
   return {
     added,
     errors
   };
+}
+
+// Accepts either "[label](url)" (the common Markdown link syntax) or a bare
+// URL on its own — in which case the URL doubles as the label.
+function parseLinkSyntax(input) {
+  const trimmed = input.trim();
+  const m = trimmed.match(/^\[(.+?)\]\((\S+?)\)$/);
+  if (m) return {
+    label: m[1].trim(),
+    url: m[2].trim()
+  };
+  return {
+    label: trimmed,
+    url: trimmed
+  };
+}
+
+// Small "i" icon that shows a floating text box on hover (and toggles on
+// click/tap, for touch). Used for per-link descriptions.
+function InlineInfoHover({
+  text
+}) {
+  const [open, setOpen] = useState(false);
+  if (!text) return null;
+  return /*#__PURE__*/React.createElement("span", {
+    style: {
+      position: "relative",
+      display: "inline-flex",
+      marginLeft: 4
+    }
+  }, /*#__PURE__*/React.createElement(Info, {
+    size: 12,
+    color: COLORS.faint,
+    style: {
+      cursor: "pointer"
+    },
+    onMouseEnter: () => setOpen(true),
+    onMouseLeave: () => setOpen(false),
+    onClick: e => {
+      e.stopPropagation();
+      setOpen(o => !o);
+    }
+  }), open && /*#__PURE__*/React.createElement("div", {
+    onMouseEnter: () => setOpen(true),
+    onMouseLeave: () => setOpen(false),
+    style: {
+      position: "absolute",
+      bottom: "calc(100% + 6px)",
+      left: 0,
+      zIndex: 60,
+      background: COLORS.panel2,
+      border: `1px solid ${COLORS.line}`,
+      borderRadius: 6,
+      padding: "7px 9px",
+      fontSize: 11.5,
+      color: COLORS.text,
+      width: 220,
+      boxShadow: "0 8px 22px rgba(0,0,0,0.45)",
+      whiteSpace: "pre-wrap",
+      lineHeight: 1.4
+    }
+  }, text));
 }
 function eventMatchesClauses(ev, clauses) {
   const fieldValues = {
@@ -666,6 +769,11 @@ function EditEventModal({
   const [start, setStart] = useState(minsToInput(ev.startMinutes));
   const [dur, setDur] = useState(ev.duration);
   const [approvedBy, setApprovedBy] = useState(ev.approvedBy || []);
+  const [notesFormat, setNotesFormat] = useState(ev.notes && ev.notes.format || "text");
+  const [notesContent, setNotesContent] = useState(ev.notes && ev.notes.content || "");
+  const [links, setLinks] = useState(ev.links || []);
+  const [linkInput, setLinkInput] = useState("");
+  const [linkDescInput, setLinkDescInput] = useState("");
   function minsToInput(m) {
     return `${pad2(Math.floor(m / 60) % 24)}:${pad2(m % 60)}`;
   }
@@ -787,7 +895,135 @@ function EditEventModal({
       color: COLORS.accent,
       marginTop: 4
     }
-  }, "All required approvers have signed off."))), /*#__PURE__*/React.createElement("div", {
+  }, "All required approvers have signed off.")), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between"
+    }
+  }, /*#__PURE__*/React.createElement("label", {
+    style: labelStyle
+  }, "Notes"), /*#__PURE__*/React.createElement("select", {
+    value: notesFormat,
+    onChange: e => setNotesFormat(e.target.value),
+    style: {
+      ...inputStyle,
+      width: "auto",
+      padding: "3px 6px",
+      fontSize: 11
+    }
+  }, /*#__PURE__*/React.createElement("option", {
+    value: "text"
+  }, "Text"), /*#__PURE__*/React.createElement("option", {
+    value: "markdown"
+  }, "Markdown"), /*#__PURE__*/React.createElement("option", {
+    value: "json"
+  }, "JSON"), /*#__PURE__*/React.createElement("option", {
+    value: "csv"
+  }, "CSV"))), /*#__PURE__*/React.createElement("textarea", {
+    value: notesContent,
+    onChange: e => setNotesContent(e.target.value),
+    placeholder: "Anything a worker or approver should know about this block…",
+    rows: 4,
+    style: {
+      ...inputStyle,
+      marginTop: 4,
+      resize: "vertical",
+      fontFamily: notesFormat === "json" || notesFormat === "csv" ? "ui-monospace, monospace" : "inherit"
+    }
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: labelStyle
+  }, "Links"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 4,
+      marginTop: 4
+    }
+  }, links.map((l, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 6,
+      fontSize: 12.5
+    }
+  }, /*#__PURE__*/React.createElement(LinkIcon, {
+    size: 11,
+    color: COLORS.faint
+  }), /*#__PURE__*/React.createElement("a", {
+    href: l.url,
+    target: "_blank",
+    rel: "noopener noreferrer",
+    style: {
+      color: "#7FB8E0",
+      textDecoration: "underline",
+      wordBreak: "break-all"
+    }
+  }, l.label), /*#__PURE__*/React.createElement(InlineInfoHover, {
+    text: l.description
+  }), /*#__PURE__*/React.createElement(X, {
+    size: 11,
+    color: COLORS.faint,
+    style: {
+      cursor: "pointer",
+      marginLeft: "auto"
+    },
+    onClick: () => setLinks(links.filter((_, x) => x !== i))
+  }))), links.length === 0 && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: COLORS.faint
+    }
+  }, "No links yet")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 8,
+      padding: 8,
+      background: COLORS.panel2,
+      borderRadius: 6,
+      border: `1px solid ${COLORS.line}`
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    value: linkInput,
+    onChange: e => setLinkInput(e.target.value),
+    placeholder: "[Site plan](https://example.com/plan.pdf) — or just paste a URL",
+    style: {
+      ...inputStyle,
+      fontSize: 11.5
+    }
+  }), /*#__PURE__*/React.createElement("input", {
+    value: linkDescInput,
+    onChange: e => setLinkDescInput(e.target.value),
+    placeholder: "Description (optional) — shown on the info icon",
+    style: {
+      ...inputStyle,
+      fontSize: 11.5,
+      marginTop: 6
+    }
+  }), /*#__PURE__*/React.createElement("button", {
+    style: {
+      ...ghostBtnStyle,
+      marginTop: 6,
+      fontSize: 11,
+      padding: "5px 10px"
+    },
+    onClick: () => {
+      if (!linkInput.trim()) return;
+      const {
+        label,
+        url
+      } = parseLinkSyntax(linkInput);
+      setLinks([...links, {
+        label,
+        url,
+        description: linkDescInput.trim()
+      }]);
+      setLinkInput("");
+      setLinkDescInput("");
+    }
+  }, /*#__PURE__*/React.createElement(Plus, {
+    size: 12
+  }), " Add link")))), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       justifyContent: "space-between",
@@ -816,7 +1052,12 @@ function EditEventModal({
         workers,
         startMinutes: h * 60 + m,
         duration: Math.max(15, dur),
-        approvedBy
+        approvedBy,
+        notes: {
+          format: notesFormat,
+          content: notesContent
+        },
+        links
       });
     },
     style: primaryBtnStyle
@@ -873,6 +1114,8 @@ function ConfigModal({
   setWorkTypes,
   requiredApprovers,
   setRequiredApprovers,
+  showEventIds,
+  setShowEventIds,
   onClose
 }) {
   const [tab, setTab] = useState("users");
@@ -937,7 +1180,7 @@ function ConfigModal({
       gap: 4,
       padding: "10px 16px 0"
     }
-  }, ["users", "locations", "types", "approvals"].map(t => /*#__PURE__*/React.createElement("button", {
+  }, ["users", "locations", "types", "approvals", "view"].map(t => /*#__PURE__*/React.createElement("button", {
     key: t,
     onClick: () => setTab(t),
     style: {
@@ -1269,7 +1512,27 @@ function ConfigModal({
     onChange: e => {
       if (e.target.checked) setRequiredApprovers([...requiredApprovers, u.alias]);else setRequiredApprovers(requiredApprovers.filter(n => n !== u.alias));
     }
-  }), u.alias)))))));
+  }), u.alias)))), tab === "view" && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      fontSize: 13,
+      color: COLORS.text,
+      cursor: "pointer"
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    checked: showEventIds,
+    onChange: e => setShowEventIds(e.target.checked)
+  }), "Show event ID on calendar blocks"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: COLORS.faint,
+      marginTop: 6,
+      marginLeft: 24
+    }
+  }, "Prints each block's underlying database ID (e.g. ", /*#__PURE__*/React.createElement("code", null, "ev_a1b2c3"), ") in small text on the block itself — useful when cross-referencing an export or a support request against what's on screen. This is just a display preference (saved in this browser), not something exported or synced.")))));
 }
 
 // ---------- Export modal ----------
@@ -1283,8 +1546,16 @@ function ExportModal({
   const [filter, setFilter] = useState("");
   const [error, setError] = useState("");
   const [tz, setTz] = useState("local"); // "local" | "utc"
+  const [includeId, setIncludeId] = useState(false);
   const tzName = localTZName();
-  function buildRows() {
+  function flattenLinks(links) {
+    return (links || []).map(l => {
+      let s = `${l.label} (${l.url})`;
+      if (l.description) s += ` \u2014 ${l.description}`;
+      return s;
+    }).join(" | ");
+  }
+  function buildRows(structured) {
     const clauses = parseFilterSyntax(filter);
     const fromE = epochDay(from),
       toE = epochDay(to);
@@ -1295,7 +1566,10 @@ function ExportModal({
     }).filter(ev => eventMatchesClauses(ev, clauses)).map(ev => {
       const s = fmtInTZ(eventStartDate(ev), useUTC);
       const e = fmtInTZ(eventEndDate(ev), useUTC);
-      return {
+      const base = {
+        ...(includeId ? {
+          id: ev.id
+        } : {}),
         date: s.date,
         start: s.time,
         end: e.time,
@@ -1306,6 +1580,19 @@ function ExportModal({
         types: ev.types.join("; "),
         approvedBy: (ev.approvedBy || []).join("; "),
         fullyApproved: isFullyApproved(ev, requiredApprovers) ? "Yes" : "No"
+      };
+      return structured ? {
+        ...base,
+        notes: ev.notes || {
+          format: "text",
+          content: ""
+        },
+        links: ev.links || []
+      } : {
+        ...base,
+        notesFormat: ev.notes && ev.notes.format || "text",
+        notes: ev.notes && ev.notes.content || "",
+        links: flattenLinks(ev.links)
       };
     }).sort((a, b) => a.startSort - b.startSort).map(({
       startSort,
@@ -1323,14 +1610,14 @@ function ExportModal({
   }
   function doExport(kind) {
     try {
-      const rows = buildRows();
+      const rows = buildRows(kind === "json");
       setError("");
       if (rows.length === 0) {
         setError("No rows match this range and filter.");
         return;
       }
       if (kind === "csv") {
-        const headers = ["date", "start", "end", "timezone", "workers", "locations", "types", "approvedBy", "fullyApproved"];
+        const headers = [...(includeId ? ["id"] : []), "date", "start", "end", "timezone", "workers", "locations", "types", "approvedBy", "fullyApproved", "notesFormat", "notes", "links"];
         const csv = [headers.join(",")].concat(rows.map(r => headers.map(h => `"${String(r[h]).replace(/"/g, '""')}"`).join(","))).join("\n");
         download("schedule_export.csv", new Blob([csv], {
           type: "text/csv"
@@ -1419,7 +1706,20 @@ function ExportModal({
   }, "Local (", tzName, ")"), /*#__PURE__*/React.createElement("button", {
     onClick: () => setTz("utc"),
     style: tz === "utc" ? primaryBtnStyle : ghostBtnStyle
-  }, "UTC"))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+  }, "UTC"))), /*#__PURE__*/React.createElement("label", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      fontSize: 12.5,
+      color: COLORS.muted,
+      cursor: "pointer"
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    checked: includeId,
+    onChange: e => setIncludeId(e.target.checked)
+  }), "Include event ID column"), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     style: labelStyle
   }, "Filter"), /*#__PURE__*/React.createElement("input", {
     value: filter,
@@ -1476,7 +1776,9 @@ function BulkImportModal({
     "locations": ["North Yard"],
     "types": ["Install"],
     "workers": ["J. Martinez", "A. Smith"],
-    "approvedBy": []
+    "approvedBy": [],
+    "notes": { "format": "text", "content": "Bring extra conduit" },
+    "links": [{ "label": "Site plan", "url": "https://example.com/plan.pdf", "description": "Marked-up PDF" }]
   }
 ]`;
   function runImport() {
@@ -1526,7 +1828,7 @@ function BulkImportModal({
       fontSize: 11,
       color: COLORS.faint
     }
-  }, "Paste a JSON array of blocks. Each item needs ", /*#__PURE__*/React.createElement("code", null, "date"), " (\"YYYY-MM-DD\"),", " ", /*#__PURE__*/React.createElement("code", null, "start"), " (\"HH:MM\", 24-hour) and ", /*#__PURE__*/React.createElement("code", null, "duration"), " (minutes).", " ", /*#__PURE__*/React.createElement("code", null, "locations"), ", ", /*#__PURE__*/React.createElement("code", null, "types"), ", ", /*#__PURE__*/React.createElement("code", null, "workers"), " and ", /*#__PURE__*/React.createElement("code", null, "approvedBy"), " are optional arrays of names — anything not on file yet in Config still gets added to the block as text."), /*#__PURE__*/React.createElement("textarea", {
+  }, "Paste a JSON array of blocks. Each item needs ", /*#__PURE__*/React.createElement("code", null, "date"), " (\"YYYY-MM-DD\"),", " ", /*#__PURE__*/React.createElement("code", null, "start"), " (\"HH:MM\", 24-hour) and ", /*#__PURE__*/React.createElement("code", null, "duration"), " (minutes).", " ", /*#__PURE__*/React.createElement("code", null, "locations"), ", ", /*#__PURE__*/React.createElement("code", null, "types"), ", ", /*#__PURE__*/React.createElement("code", null, "workers"), " and ", /*#__PURE__*/React.createElement("code", null, "approvedBy"), " are optional arrays of names — anything not on file yet in Config still gets added to the block as text.", " ", /*#__PURE__*/React.createElement("code", null, "notes"), " (", /*#__PURE__*/React.createElement("code", null, "{format, content}"), ", format is text/json/csv/markdown) and", " ", /*#__PURE__*/React.createElement("code", null, "links"), " (array of ", /*#__PURE__*/React.createElement("code", null, "{label, url, description}"), ") are also optional."), /*#__PURE__*/React.createElement("textarea", {
     value: text,
     onChange: e => setText(e.target.value),
     placeholder: example,
@@ -1661,6 +1963,190 @@ const dangerBtnStyle = {
   cursor: "pointer"
 };
 
+// ---------- info popup: full block details on hover ----------
+function BlockInfoPopup({
+  ev,
+  corner,
+  requiredApprovers,
+  onMouseEnter,
+  onMouseLeave
+}) {
+  const approvedBy = ev.approvedBy || [];
+  const fullyApproved = isFullyApproved(ev, requiredApprovers);
+  const endDay = eventEndDay(ev);
+  const endMinutes = (ev.startMinutes + ev.duration) % 1440;
+  const timeRange = `${minsToLabel(ev.startMinutes)} \u2013 ${minsToLabel(endMinutes)}` + (endDay !== ev.date ? ` (${fmtDateShort(endDay)})` : "");
+  const hasNotes = ev.notes && ev.notes.content && ev.notes.content.trim();
+  const posStyle = corner === "bottom-right" ? {
+    bottom: 16,
+    right: 16
+  } : {
+    bottom: 16,
+    left: 16
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    onMouseEnter: onMouseEnter,
+    onMouseLeave: onMouseLeave,
+    style: {
+      position: "fixed",
+      ...posStyle,
+      zIndex: 80,
+      width: 300,
+      maxHeight: "60vh",
+      overflowY: "auto",
+      background: COLORS.panel,
+      border: `1px solid ${COLORS.line}`,
+      borderRadius: 10,
+      boxShadow: "0 16px 36px rgba(0,0,0,0.5)",
+      padding: 14,
+      fontSize: 12.5,
+      color: COLORS.text
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "baseline"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: COLORS.faint
+    }
+  }, fmtDateShort(ev.date)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 9.5,
+      color: COLORS.faint,
+      fontFamily: "ui-monospace, monospace"
+    }
+  }, ev.id)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 600,
+      marginTop: 2
+    }
+  }, timeRange), ev.locations.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 8
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: COLORS.faint
+    }
+  }, "LOCATIONS"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 3
+    }
+  }, ev.locations.map(l => /*#__PURE__*/React.createElement(Chip, {
+    key: l,
+    tone: "loc"
+  }, l)))), ev.types.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 8
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: COLORS.faint
+    }
+  }, "TYPES"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 3
+    }
+  }, ev.types.map(t => /*#__PURE__*/React.createElement(Chip, {
+    key: t,
+    tone: "type"
+  }, t)))), ev.workers.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 8
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: COLORS.faint
+    }
+  }, "WORKERS"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 3
+    }
+  }, ev.workers.map(w => /*#__PURE__*/React.createElement(Chip, {
+    key: w,
+    tone: "worker"
+  }, w)))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 8
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: COLORS.faint
+    }
+  }, "APPROVAL"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 3,
+      color: fullyApproved ? COLORS.accent : approvedBy.length ? COLORS.amber : COLORS.faint
+    }
+  }, approvedBy.length === 0 ? "No approvals yet" : `Approved by ${approvedBy.join(", ")}`, fullyApproved && " \u2014 fully approved")), hasNotes && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 8
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: COLORS.faint
+    }
+  }, "NOTES (", ev.notes.format, ")"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 3,
+      whiteSpace: "pre-wrap",
+      fontFamily: ev.notes.format === "json" || ev.notes.format === "csv" ? "ui-monospace, monospace" : "inherit",
+      fontSize: 11.5,
+      lineHeight: 1.4,
+      background: COLORS.panel2,
+      borderRadius: 6,
+      padding: "6px 8px"
+    }
+  }, ev.notes.content)), ev.links && ev.links.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 8
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: COLORS.faint
+    }
+  }, "LINKS"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 3,
+      display: "flex",
+      flexDirection: "column",
+      gap: 3
+    }
+  }, ev.links.map((l, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 5
+    }
+  }, /*#__PURE__*/React.createElement(LinkIcon, {
+    size: 10,
+    color: COLORS.faint
+  }), /*#__PURE__*/React.createElement("a", {
+    href: l.url,
+    target: "_blank",
+    rel: "noopener noreferrer",
+    style: {
+      color: "#7FB8E0",
+      textDecoration: "underline",
+      wordBreak: "break-all"
+    }
+  }, l.label), /*#__PURE__*/React.createElement(InlineInfoHover, {
+    text: l.description
+  }))))));
+}
+
 // ---------- context create-menu (right click) ----------
 function ContextCreateMenu({
   x,
@@ -1751,7 +2237,39 @@ function WorkSchedulePlanner() {
   // Load persisted state on first mount. If nothing answers (e.g. the page
   // was opened directly via `python -m http.server`, with no server/app.py
   // running), silently keep the built-in seed data and work in memory only.
+  const [isSnapshotMode, setIsSnapshotMode] = useState(false);
+
+  // Purely a display preference (not part of the shared schedule data), so
+  // it's kept in this browser via localStorage rather than synced to the API.
+  const [showEventIds, setShowEventIds] = useState(() => {
+    try {
+      return localStorage.getItem("schedule_showEventIds") === "1";
+    } catch {
+      return false;
+    }
+  });
   useEffect(() => {
+    try {
+      localStorage.setItem("schedule_showEventIds", showEventIds ? "1" : "0");
+    } catch {/* ignore (private browsing, etc.) */}
+  }, [showEventIds]);
+  useEffect(() => {
+    // A standalone exported copy (see downloadStandaloneSnapshot) embeds its
+    // data directly in the page instead of fetching it from an API. If
+    // that's present, use it and skip the network entirely — this is what
+    // makes the exported file work fully offline via file://.
+    if (typeof window !== "undefined" && window.__SCHEDULE_SNAPSHOT__) {
+      const snap = window.__SCHEDULE_SNAPSHOT__;
+      if (snap.users) setUsers(snap.users);
+      if (snap.locations) setLocations(snap.locations);
+      if (snap.workTypes) setWorkTypes(snap.workTypes);
+      if (snap.requiredApprovers) setRequiredApprovers(snap.requiredApprovers);
+      if (snap.events) setEvents(snap.events);
+      apiAvailableRef.current = false;
+      setApiAvailable(false);
+      setIsSnapshotMode(true);
+      return;
+    }
     let cancelled = false;
     (async () => {
       const [u, l, t, ra, ev] = await Promise.all([apiRequest("GET", "/users"), apiRequest("GET", "/locations"), apiRequest("GET", "/work_types"), apiRequest("GET", "/required_approvers"), apiRequest("GET", "/events")]);
@@ -1843,8 +2361,106 @@ function WorkSchedulePlanner() {
   const [configOpen, setConfigOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [bulkImportOpen, setBulkImportOpen] = useState(false);
+  const [snapshotBusy, setSnapshotBusy] = useState(false);
+  const [snapshotError, setSnapshotError] = useState("");
+
+  // Bundles a fully self-contained copy of this app — React/ReactDOM/xlsx
+  // and the compiled app itself, all inlined — with the current schedule
+  // embedded as data, so someone with no access to this server can open
+  // the file directly (file://), view/edit it, and use the regular Export
+  // button to send their changes back as CSV/JSON/Excel. Requires this page
+  // to currently be served (so it can read its own vendor/app.js files);
+  // the resulting downloaded file has no such requirement.
+  function escapeForInlineScript(s) {
+    return s.replace(/<\/script/gi, "<\\/script");
+  }
+  async function downloadStandaloneSnapshot() {
+    setSnapshotBusy(true);
+    setSnapshotError("");
+    try {
+      const [reactJs, reactDomJs, xlsxJs, appJs] = await Promise.all([fetch("vendor/react.production.min.js").then(r => {
+        if (!r.ok) throw new Error("vendor/react.production.min.js");
+        return r.text();
+      }), fetch("vendor/react-dom.production.min.js").then(r => {
+        if (!r.ok) throw new Error("vendor/react-dom.production.min.js");
+        return r.text();
+      }), fetch("vendor/xlsx.full.min.js").then(r => {
+        if (!r.ok) throw new Error("vendor/xlsx.full.min.js");
+        return r.text();
+      }), fetch("app.js").then(r => {
+        if (!r.ok) throw new Error("app.js");
+        return r.text();
+      })]);
+      const snapshot = {
+        users,
+        locations,
+        workTypes,
+        requiredApprovers,
+        events,
+        exportedAt: new Date().toISOString()
+      };
+      const snapshotJson = escapeForInlineScript(JSON.stringify(snapshot));
+      const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Field Schedule (offline copy)</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #0A0D10; }
+  #root { height: 100vh; padding: 16px; box-sizing: border-box; color: #E7EBEE; font-family: system-ui, sans-serif; }
+  * { box-sizing: border-box; }
+</style>
+</head>
+<body>
+<div id="root">Loading\u2026</div>
+<script>${escapeForInlineScript(reactJs)}</script>
+<script>${escapeForInlineScript(reactDomJs)}</script>
+<script>${escapeForInlineScript(xlsxJs)}</script>
+<script>window.__SCHEDULE_SNAPSHOT__ = ${snapshotJson};</script>
+<script>${escapeForInlineScript(appJs)}</script>
+</body>
+</html>
+`;
+      const blob = new Blob([html], {
+        type: "text/html"
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `field-schedule-offline-${isoDate(new Date())}.html`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setSnapshotError(`Couldn't build the offline copy \u2014 failed to load ${e.message}.`);
+    } finally {
+      setSnapshotBusy(false);
+    }
+  }
   const [editingId, setEditingId] = useState(null);
   const [contextMenu, setContextMenu] = useState(null);
+  const [infoPopup, setInfoPopup] = useState(null); // { id, corner: "bottom-right" | "bottom-left" }
+  const infoCloseTimer = useRef(null);
+  // Coarse-pointer / touch devices don't really have "hover" — tapping a
+  // tiny info icon precisely is fiddly there too, so on those devices the
+  // info icon jumps straight to the edit modal instead of showing a popup.
+  const isTouchDevice = useMemo(() => {
+    if (typeof window === "undefined") return false;
+    return window.matchMedia && window.matchMedia("(pointer: coarse)").matches || "ontouchstart" in window;
+  }, []);
+  function openInfoPopup(id, corner) {
+    if (infoCloseTimer.current) {
+      clearTimeout(infoCloseTimer.current);
+      infoCloseTimer.current = null;
+    }
+    setInfoPopup({
+      id,
+      corner
+    });
+  }
+  function scheduleCloseInfoPopup() {
+    infoCloseTimer.current = setTimeout(() => setInfoPopup(null), 150);
+  }
   const [recents, setRecents] = useState({
     loc: [],
     type: [],
@@ -1969,7 +2585,12 @@ function WorkSchedulePlanner() {
       locations: loc ? [loc] : [],
       types: type ? [type] : [],
       workers: worker ? [worker] : [],
-      approvedBy: []
+      approvedBy: [],
+      notes: {
+        format: "text",
+        content: ""
+      },
+      links: []
     };
     setEvents(evs => [...evs, localEvent]);
     if (apiAvailableRef.current) {
@@ -2253,7 +2874,17 @@ function WorkSchedulePlanner() {
       letterSpacing: 0.2,
       marginRight: 6
     }
-  }, "Field Schedule"), apiAvailable !== null && /*#__PURE__*/React.createElement("span", {
+  }, "Field Schedule"), isSnapshotMode ? /*#__PURE__*/React.createElement("span", {
+    title: "This is an offline copy — nothing here is sent anywhere automatically. Use the Export button when you're done to send your changes back.",
+    style: {
+      fontSize: 10,
+      padding: "2px 7px",
+      borderRadius: 10,
+      color: COLORS.amber,
+      border: `1px solid ${COLORS.amber}55`,
+      whiteSpace: "nowrap"
+    }
+  }, "\u25D1 Offline copy") : apiAvailable !== null && /*#__PURE__*/React.createElement("span", {
     title: apiAvailable ? "Connected to server/app.py — changes are saved" : "No backend reachable — changes are local to this tab only",
     style: {
       fontSize: 10,
@@ -2263,7 +2894,12 @@ function WorkSchedulePlanner() {
       border: `1px solid ${apiAvailable ? COLORS.accent : COLORS.faint}55`,
       whiteSpace: "nowrap"
     }
-  }, apiAvailable ? "\u25CF Synced" : "\u25CB Local only"), /*#__PURE__*/React.createElement("div", {
+  }, apiAvailable ? "\u25CF Synced" : "\u25CB Local only"), snapshotError && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10,
+      color: COLORS.danger
+    }
+  }, snapshotError), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
@@ -2332,6 +2968,15 @@ function WorkSchedulePlanner() {
     onClick: () => setBulkImportOpen(true)
   }, /*#__PURE__*/React.createElement(Plus, {
     size: 16
+  })), /*#__PURE__*/React.createElement(IconBtn, {
+    title: snapshotBusy ? "Building offline copy\u2026" : "Download an offline copy (view/edit without server access)",
+    onClick: downloadStandaloneSnapshot
+  }, snapshotBusy ? /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 10
+    }
+  }, "\u2026") : /*#__PURE__*/React.createElement(OfflineIcon, {
+    size: 15
   })), /*#__PURE__*/React.createElement(IconBtn, {
     title: "Export",
     onClick: () => setExportOpen(true)
@@ -2567,6 +3212,8 @@ function WorkSchedulePlanner() {
       const approvedBy = ev.approvedBy || [];
       const fullyApproved = isFullyApproved(ev, requiredApprovers);
       const partiallyApproved = !fullyApproved && approvedBy.length > 0;
+      const hasNotes = !!(ev.notes && ev.notes.content && ev.notes.content.trim());
+      const hasLinks = !!(ev.links && ev.links.length > 0);
       return /*#__PURE__*/React.createElement("div", {
         key: ev.id + "_" + date,
         onDragOver: e => e.preventDefault(),
@@ -2603,7 +3250,53 @@ function WorkSchedulePlanner() {
           color: COLORS.faint,
           fontVariantNumeric: "tabular-nums"
         }
-      }, isHomeDay ? minsToLabel(ev.startMinutes) : "\u22EF continued"), /*#__PURE__*/React.createElement(Pencil, {
+      }, isHomeDay ? minsToLabel(ev.startMinutes) : "\u22EF continued"), /*#__PURE__*/React.createElement("div", {
+        style: {
+          display: "flex",
+          alignItems: "center",
+          gap: 3
+        }
+      }, hasNotes && /*#__PURE__*/React.createElement("span", {
+        title: "Has notes",
+        style: {
+          fontSize: 8.5,
+          fontWeight: 700,
+          color: COLORS.amber,
+          border: `1px solid ${COLORS.amber}77`,
+          borderRadius: 3,
+          padding: "0 3px",
+          lineHeight: "11px"
+        }
+      }, "N"), hasLinks && /*#__PURE__*/React.createElement("span", {
+        title: "Has links",
+        style: {
+          fontSize: 8.5,
+          fontWeight: 700,
+          color: "#7FB8E0",
+          border: "1px solid #7FB8E077",
+          borderRadius: 3,
+          padding: "0 3px",
+          lineHeight: "11px"
+        }
+      }, "L"), /*#__PURE__*/React.createElement(Info, {
+        size: 10,
+        color: COLORS.faint,
+        style: {
+          cursor: "pointer"
+        },
+        onMouseEnter: e => {
+          if (isTouchDevice) return;
+          const corner = e.clientX < window.innerWidth / 2 ? "bottom-right" : "bottom-left";
+          openInfoPopup(ev.id, corner);
+        },
+        onMouseLeave: () => {
+          if (!isTouchDevice) scheduleCloseInfoPopup();
+        },
+        onClick: e => {
+          e.stopPropagation();
+          if (isTouchDevice) setEditingId(ev.id);
+        }
+      }), /*#__PURE__*/React.createElement(Pencil, {
         size: 10,
         style: {
           cursor: "pointer",
@@ -2613,7 +3306,7 @@ function WorkSchedulePlanner() {
           e.stopPropagation();
           setEditingId(ev.id);
         }
-      })), /*#__PURE__*/React.createElement("div", {
+      }))), /*#__PURE__*/React.createElement("div", {
         style: {
           display: "flex",
           flexWrap: "wrap",
@@ -2634,7 +3327,15 @@ function WorkSchedulePlanner() {
           color: fullyApproved ? COLORS.accent : COLORS.amber,
           marginTop: 2
         }
-      }, "Approved: ", approvedBy.join(", ")), !isHomeDay && /*#__PURE__*/React.createElement("div", {
+      }, "Approved: ", approvedBy.join(", ")), showEventIds && /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 8.5,
+          color: COLORS.faint,
+          fontFamily: "ui-monospace, monospace",
+          marginTop: 2,
+          opacity: 0.8
+        }
+      }, ev.id), !isHomeDay && /*#__PURE__*/React.createElement("div", {
         style: {
           position: "absolute",
           top: 0,
@@ -2699,7 +3400,17 @@ function WorkSchedulePlanner() {
       });
       setContextMenu(null);
     }
-  }), editingEvent && /*#__PURE__*/React.createElement(EditEventModal, {
+  }), infoPopup && (() => {
+    const popupEvent = events.find(e => e.id === infoPopup.id);
+    if (!popupEvent) return null;
+    return /*#__PURE__*/React.createElement(BlockInfoPopup, {
+      ev: popupEvent,
+      corner: infoPopup.corner,
+      requiredApprovers: requiredApprovers,
+      onMouseEnter: () => openInfoPopup(infoPopup.id, infoPopup.corner),
+      onMouseLeave: scheduleCloseInfoPopup
+    });
+  })(), editingEvent && /*#__PURE__*/React.createElement(EditEventModal, {
     ev: editingEvent,
     allLocations: locationNames,
     allTypes: typeNames,
@@ -2721,6 +3432,8 @@ function WorkSchedulePlanner() {
     setWorkTypes: setWorkTypesSynced,
     requiredApprovers: requiredApprovers,
     setRequiredApprovers: setRequiredApproversSynced,
+    showEventIds: showEventIds,
+    setShowEventIds: setShowEventIds,
     onClose: () => setConfigOpen(false)
   }), exportOpen && /*#__PURE__*/React.createElement(ExportModal, {
     events: events,
