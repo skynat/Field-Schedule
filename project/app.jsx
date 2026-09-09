@@ -67,6 +67,13 @@ const uid = (p) => `${p}_${Date.now().toString(36)}_${Math.random().toString(36)
 // state held only in memory — when there's no backend at all, e.g. when
 // you're just opening index.html via `python -m http.server` for a look.
 const API_BASE = "/api";
+// The running app registers a listener here (see the connectivity effect in
+// WorkSchedulePlanner) so that EVERY request — not just the initial load —
+// updates the "Synced"/"Local only" badge. Without this, the badge only
+// reflected whether the very first page load succeeded; if the backend died
+// mid-session, later edits would fail silently and the badge would keep
+// saying "Synced" even though nothing was actually being saved.
+let apiStatusListener = null;
 async function apiRequest(method, path, body) {
   try {
     const res = await fetch(API_BASE + path, {
@@ -74,10 +81,12 @@ async function apiRequest(method, path, body) {
       headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
-    if (!res.ok) return null;
+    if (!res.ok) { if (apiStatusListener) apiStatusListener(false); return null; }
+    if (apiStatusListener) apiStatusListener(true);
     if (res.status === 204) return true;
     return await res.json();
   } catch {
+    if (apiStatusListener) apiStatusListener(false);
     return null; // no network / no backend running — caller treats this as "stay local"
   }
 }
@@ -85,20 +94,21 @@ async function apiRequest(method, path, body) {
 // to the backend: POST for anything new, PUT for anything changed, DELETE
 // for anything removed. Used for the users/locations/work_types lists,
 // which the Config modal still edits as plain arrays via setState.
-function syncListToApi(resource, toApiBody, prev, next, onServerIdAssigned) {
+function syncListToApi(resource, toApiBody, prev, next, onServerIdAssigned, requestFn) {
+  const request = requestFn || apiRequest;
   const prevMap = new Map(prev.map((x) => [x.id, x]));
   const nextMap = new Map(next.map((x) => [x.id, x]));
   for (const id of prevMap.keys()) {
-    if (!nextMap.has(id) && !id.startsWith("__pending_")) apiRequest("DELETE", `/${resource}/${id}`);
+    if (!nextMap.has(id) && !id.startsWith("__pending_")) request("DELETE", `/${resource}/${id}`);
   }
   for (const [id, item] of nextMap) {
     const before = prevMap.get(id);
     if (!before) {
-      apiRequest("POST", `/${resource}`, toApiBody(item)).then((created) => {
+      request("POST", `/${resource}`, toApiBody(item)).then((created) => {
         if (created && created.id && created.id !== id) onServerIdAssigned(id, created.id);
       });
     } else if (JSON.stringify(before) !== JSON.stringify(item)) {
-      apiRequest("PUT", `/${resource}/${id}`, toApiBody(item));
+      request("PUT", `/${resource}/${id}`, toApiBody(item));
     }
   }
 }
@@ -1333,6 +1343,35 @@ function WorkSchedulePlanner() {
   const [apiAvailable, setApiAvailable] = useState(null);
   const apiAvailableRef = useRef(false);
 
+  // Every apiRequest() call — not just the initial load — reports its
+  // success/failure here, so if the backend dies mid-session the badge
+  // reflects that on the very next edit instead of staying stuck on
+  // whatever it said at load time. If the backend comes back later, the
+  // next successful request flips it back automatically.
+  useEffect(() => {
+    apiStatusListener = (ok) => {
+      apiAvailableRef.current = ok;
+      setApiAvailable(ok);
+    };
+    return () => { apiStatusListener = null; };
+  }, []);
+
+  // Save-lifecycle tracking, separate from the connectivity check above:
+  // this drives red/green specifically for "did my last edit actually get
+  // saved", which is a more direct question than "is a backend reachable
+  // at all". Red the instant an edit is sent, green only once the backend
+  // has actually confirmed it — and it stays red (doesn't quietly flip back
+  // to green) if that confirmation never comes.
+  const [pendingSaves, setPendingSaves] = useState(0);
+  const [hasSaveError, setHasSaveError] = useState(false);
+  async function trackedApiRequest(method, path, body) {
+    setPendingSaves((n) => n + 1);
+    const result = await apiRequest(method, path, body);
+    setPendingSaves((n) => Math.max(0, n - 1));
+    setHasSaveError(result === null);
+    return result;
+  }
+
   // Load persisted state on first mount. If nothing answers (e.g. the page
   // was opened directly via `python -m http.server`, with no server/app.py
   // running), silently keep the built-in seed data and work in memory only.
@@ -1396,9 +1435,9 @@ function WorkSchedulePlanner() {
   function setUsersSynced(next) {
     setUsers((prev) => {
       const resolved = typeof next === "function" ? next(prev) : next;
-      if (apiAvailableRef.current) {
+      if (!isSnapshotMode) {
         syncListToApi("users", (u) => ({ login: u.login, alias: u.alias, isWorker: u.isWorker, isApprover: u.isApprover }),
-          prev, resolved, (oldId, newId) => setUsers((cur) => cur.map((x) => x.id === oldId ? { ...x, id: newId } : x)));
+          prev, resolved, (oldId, newId) => setUsers((cur) => cur.map((x) => x.id === oldId ? { ...x, id: newId } : x)), trackedApiRequest);
       }
       return resolved;
     });
@@ -1406,9 +1445,9 @@ function WorkSchedulePlanner() {
   function setLocationsSynced(next) {
     setLocations((prev) => {
       const resolved = typeof next === "function" ? next(prev) : next;
-      if (apiAvailableRef.current) {
+      if (!isSnapshotMode) {
         syncListToApi("locations", (l) => ({ name: l.name }), prev, resolved,
-          (oldId, newId) => setLocations((cur) => cur.map((x) => x.id === oldId ? { ...x, id: newId } : x)));
+          (oldId, newId) => setLocations((cur) => cur.map((x) => x.id === oldId ? { ...x, id: newId } : x)), trackedApiRequest);
       }
       return resolved;
     });
@@ -1416,9 +1455,9 @@ function WorkSchedulePlanner() {
   function setWorkTypesSynced(next) {
     setWorkTypes((prev) => {
       const resolved = typeof next === "function" ? next(prev) : next;
-      if (apiAvailableRef.current) {
+      if (!isSnapshotMode) {
         syncListToApi("work_types", (t) => ({ name: t.name }), prev, resolved,
-          (oldId, newId) => setWorkTypes((cur) => cur.map((x) => x.id === oldId ? { ...x, id: newId } : x)));
+          (oldId, newId) => setWorkTypes((cur) => cur.map((x) => x.id === oldId ? { ...x, id: newId } : x)), trackedApiRequest);
       }
       return resolved;
     });
@@ -1426,7 +1465,7 @@ function WorkSchedulePlanner() {
   function setRequiredApproversSynced(next) {
     setRequiredApprovers((prev) => {
       const resolved = typeof next === "function" ? next(prev) : next;
-      if (apiAvailableRef.current) apiRequest("PUT", "/required_approvers", { names: resolved });
+      if (!isSnapshotMode) trackedApiRequest("PUT", "/required_approvers", { names: resolved });
       return resolved;
     });
   }
@@ -1600,13 +1639,13 @@ function WorkSchedulePlanner() {
   }
   function updateEvent(id, patch) {
     updateEventLocal(id, patch);
-    if (apiAvailableRef.current) apiRequest("PUT", `/events/${id}`, patch);
+    if (!isSnapshotMode) trackedApiRequest("PUT", `/events/${id}`, patch);
   }
   function deleteEvent(id) {
     setEvents((evs) => evs.filter((e) => e.id !== id));
     setSelectedIds((s) => { const n = new Set(s); n.delete(id); return n; });
     setEditingId(null);
-    if (apiAvailableRef.current) apiRequest("DELETE", `/events/${id}`);
+    if (!isSnapshotMode) trackedApiRequest("DELETE", `/events/${id}`);
   }
   function createEvent({ date, startMinutes, loc, type, worker }) {
     const localEvent = {
@@ -1615,8 +1654,8 @@ function WorkSchedulePlanner() {
       notes: { format: "text", content: "" }, links: [],
     };
     setEvents((evs) => [...evs, localEvent]);
-    if (apiAvailableRef.current) {
-      apiRequest("POST", "/events", localEvent).then((created) => {
+    if (!isSnapshotMode) {
+      trackedApiRequest("POST", "/events", localEvent).then((created) => {
         if (created && created.id && created.id !== localEvent.id) {
           setEvents((evs) => evs.map((e) => e.id === localEvent.id ? { ...e, id: created.id } : e));
         }
@@ -1672,7 +1711,7 @@ function WorkSchedulePlanner() {
       const nextBy = val
         ? (by.includes(name) ? by : [...by, name])
         : by.filter((n) => n !== name);
-      if (nextBy !== by && apiAvailableRef.current) apiRequest("PUT", `/events/${e.id}`, { approvedBy: nextBy });
+      if (nextBy !== by && !isSnapshotMode) trackedApiRequest("PUT", `/events/${e.id}`, { approvedBy: nextBy });
       return { ...e, approvedBy: nextBy };
     }));
   }
@@ -1710,7 +1749,7 @@ function WorkSchedulePlanner() {
   }
   function onMoveEnd() {
     const ms = moveState.current;
-    if (ms && ms.lastPatch && apiAvailableRef.current) apiRequest("PUT", `/events/${ms.id}`, ms.lastPatch);
+    if (ms && ms.lastPatch && !isSnapshotMode) trackedApiRequest("PUT", `/events/${ms.id}`, ms.lastPatch);
     moveState.current = null;
     document.removeEventListener("mousemove", onMoveDrag);
     document.removeEventListener("mouseup", onMoveEnd);
@@ -1812,6 +1851,26 @@ function WorkSchedulePlanner() {
               }}
             >
               {"\u25D1 Offline copy"}
+            </span>
+          ) : pendingSaves > 0 ? (
+            <span
+              title="Saving your last change..."
+              style={{
+                fontSize: 10, padding: "2px 7px", borderRadius: 10, color: COLORS.danger,
+                border: `1px solid ${COLORS.danger}55`, whiteSpace: "nowrap",
+              }}
+            >
+              {"\u25CF Saving\u2026"}
+            </span>
+          ) : hasSaveError ? (
+            <span
+              title="Your last change couldn't be saved to the server — it only exists in this browser tab right now. It'll retry on your next edit."
+              style={{
+                fontSize: 10, padding: "2px 7px", borderRadius: 10, color: COLORS.danger,
+                border: `1px solid ${COLORS.danger}55`, whiteSpace: "nowrap",
+              }}
+            >
+              {"\u25CF Not saved"}
             </span>
           ) : apiAvailable !== null && (
             <span
@@ -2111,9 +2170,9 @@ function WorkSchedulePlanner() {
         <BulkImportModal
           onImport={(newEvents) => {
             setEvents((evs) => [...evs, ...newEvents]);
-            if (apiAvailableRef.current) {
+            if (!isSnapshotMode) {
               newEvents.forEach((localEvent) => {
-                apiRequest("POST", "/events", localEvent).then((created) => {
+                trackedApiRequest("POST", "/events", localEvent).then((created) => {
                   if (created && created.id && created.id !== localEvent.id) {
                     setEvents((evs) => evs.map((e) => e.id === localEvent.id ? { ...e, id: created.id } : e));
                   }
