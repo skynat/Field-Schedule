@@ -238,6 +238,56 @@ merge automatically.
 
 ## Production hosting
 
+### Running behind nginx (dedicated domain, or alongside other apps)
+
+The frontend figures out its own API base URL at runtime, from wherever
+`app.js` was actually loaded from (`document.currentScript.src`) — it's
+never hardcoded to `/api`. That means the exact same built files work
+correctly whether this app:
+
+- owns a whole domain (`https://schedule.example.com/` → API calls go to
+  `https://schedule.example.com/api/...`), or
+- is mounted under a shared path alongside other WSGI apps behind one
+  nginx instance (`https://example.com/schedule/` → API calls
+  automatically go to `https://example.com/schedule/api/...`)
+
+with no rebuild, no environment variable, no config file to edit per
+deployment. (I verified both cases directly — serving the same static
+files at a domain root and, separately, under a `/schedule/` prefix — and
+confirmed the browser's actual outgoing requests land on the right URL in
+each case.)
+
+**Dedicated domain/root**, proxying straight to gunicorn:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name schedule.example.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:5000/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+```
+
+**Shared path prefix**, alongside other apps on the same domain — the key
+is the trailing slash on both `location` and `proxy_pass`, which tells
+nginx to strip the `/schedule/` prefix before forwarding, so Flask's own
+routes (`/api/users`, `/`, etc.) never need to know about the prefix at all:
+
+```nginx
+location /schedule/ {
+    proxy_pass http://127.0.0.1:5000/;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+}
+location = /schedule { return 301 /schedule/; }
+```
+
+
+
 A few things change between "works on my laptop" and "safe to point real
 users at":
 

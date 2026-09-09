@@ -75,7 +75,25 @@ const uid = p => `${p}_${Date.now().toString(36)}_${Math.random().toString(36).s
 // Every call fails soft (returns null) so the app keeps working — with
 // state held only in memory — when there's no backend at all, e.g. when
 // you're just opening index.html via `python -m http.server` for a look.
-const API_BASE = "/api";
+//
+// API_BASE is derived at runtime from wherever THIS script was actually
+// loaded from (document.currentScript.src), not hardcoded to "/api". That
+// makes the exact same built files work correctly whether the app is
+// served at a domain root (https://schedule.example.com/ -> API at /api)
+// or mounted under a shared path behind a reverse proxy alongside other
+// apps (https://example.com/schedule/ -> API at /schedule/api) — no
+// rebuild, no config file, no environment variable. document.currentScript
+// only resolves during a classic <script>'s own synchronous top-level
+// execution, which is exactly when this runs, so it's safe to capture here
+// once at module load and reuse everywhere below.
+const APP_BASE = (() => {
+  try {
+    const src = document.currentScript && document.currentScript.src;
+    if (src) return src.slice(0, src.lastIndexOf("/") + 1);
+  } catch (e) {/* not in a browser, or a security restriction — fall through */}
+  return ""; // e.g. inlined into a standalone offline snapshot with no <script src>          — harmless, that mode never calls the API anyway
+})();
+const API_BASE = (APP_BASE || "/") + "api";
 // The running app registers a listener here (see the connectivity effect in
 // WorkSchedulePlanner) so that EVERY request — not just the initial load —
 // updates the "Synced"/"Local only" badge. Without this, the badge only
