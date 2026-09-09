@@ -37,6 +37,17 @@ const OfflineIcon = makeIcon("\u{1F4BE}");
 // ---------- constants ----------
 const HOUR_PX = 52;
 const PEEK_HOURS_MIN = 2;
+// Day columns never shrink narrower than this — chosen so a block's time
+// label + N/L badges + info/edit icons always fit on one line without
+// wrapping. On a narrow phone this means the calendar goes wider than the
+// screen and scrolls horizontally instead of squeezing blocks unreadable;
+// that trade-off is intentional.
+const MIN_COL_WIDTH = 148;
+// Minimum width a single lane needs — same reasoning, but applied per lane:
+// when blocks overlap and split a column into side-by-side lanes, each lane
+// needs this much room on its own, so a column with N overlapping blocks
+// needs to be at least N * MIN_LANE_WIDTH wide, not just MIN_COL_WIDTH.
+const MIN_LANE_WIDTH = 140;
 const PEEK_HOURS_MAX = 10;
 const DAY_MIN = 1440;
 const SNAP = 15;
@@ -468,94 +479,173 @@ function Chip({ children, onRemove, tone }) {
 }
 
 // ---------- Selector box (location / type / worker) ----------
-function SelectorBox({ label, tone, options, value, recents, onPick, onDragPick }) {
+// A single compact control standing in for what used to be three separate
+// Location/Type/Worker boxes side by side. Each is now a narrow "chip" in
+// one row — tap a chip to jump straight into that category's filtered list,
+// or tap empty space in the box to see all three categories first. This is
+// what actually saves the horizontal room those three full-width boxes
+// needed, which three individually-narrower-but-still-separate boxes
+// wouldn't have fixed on small phone screens.
+function CombinedSelectorBox({ categories, selVal, recents, onPick, onDragPick, onTouchDragStart }) {
   const [open, setOpen] = useState(false);
+  const [activeKey, setActiveKey] = useState(null); // null = category chooser view
   const [query, setQuery] = useState("");
   const ref = useRef(null);
 
   useEffect(() => {
-    function handler(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false); }
+    function handler(e) {
+      if (ref.current && !ref.current.contains(e.target)) { setOpen(false); setActiveKey(null); setQuery(""); }
+    }
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
+  const active = categories.find((c) => c.key === activeKey);
+
   const ordered = useMemo(() => {
+    if (!active) return [];
     const q = query.trim().toLowerCase();
-    const base = [...options];
+    const rec = recents[active.key] || [];
+    const base = [...active.options];
     base.sort((a, b) => {
-      const ra = recents.indexOf(a), rb = recents.indexOf(b);
-      const ia = ra === -1 ? 999 : ra, ib = rb === -1 ? 999 : rb;
-      return ia - ib;
+      const ra = rec.indexOf(a), rb = rec.indexOf(b);
+      return (ra === -1 ? 999 : ra) - (rb === -1 ? 999 : rb);
     });
     return q ? base.filter((o) => o.toLowerCase().includes(q)) : base;
-  }, [options, recents, query]);
+  }, [active, query, recents]);
 
-  const toneColor = tone === "loc" ? "#7FB8E0" : tone === "type" ? COLORS.amber : "#B79AE0";
+  function openCategory(key) {
+    setActiveKey(key);
+    setOpen(true);
+    setQuery("");
+  }
 
   return (
-    <div ref={ref} style={{ position: "relative", flex: 1, minWidth: 150 }}>
+    <div ref={ref} style={{ position: "relative", flex: 1, minWidth: 240 }}>
       <div
-        draggable={!!value}
-        onDragStart={(e) => {
-          if (!value) return;
-          e.dataTransfer.setData("application/json", JSON.stringify({ kind: tone, value }));
-          onDragPick && onDragPick(value);
-        }}
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => { setOpen((o) => !o); setActiveKey(null); }}
         style={{
-          display: "flex", alignItems: "center", justifyContent: "space-between",
-          border: `1px solid ${open ? toneColor : COLORS.line}`, borderRadius: 8,
-          padding: "8px 10px", background: COLORS.panel2, cursor: value ? "grab" : "pointer",
-          userSelect: "none",
+          display: "flex", alignItems: "stretch", gap: 2, border: `1px solid ${open ? COLORS.accent : COLORS.line}`,
+          borderRadius: 8, background: COLORS.panel2, cursor: "pointer", userSelect: "none", overflow: "hidden",
         }}
       >
-        <div>
-          <div style={{ fontSize: 10, color: COLORS.faint, letterSpacing: 0.3 }}>{label}</div>
-          <div style={{ fontSize: 13, color: value ? toneColor : COLORS.muted, marginTop: 1 }}>
-            {value || "Select…"}
-          </div>
+        {categories.map((c, i) => {
+          const val = selVal[c.key];
+          return (
+            <div
+              key={c.key}
+              draggable={!!val}
+              onDragStart={(e) => {
+                if (!val) return;
+                e.stopPropagation();
+                e.dataTransfer.setData("application/json", JSON.stringify({ kind: c.key, value: val }));
+                onDragPick(c.key, val);
+              }}
+              onTouchStart={(e) => {
+                if (!val || !onTouchDragStart) return;
+                e.stopPropagation();
+                onTouchDragStart(e, c.key, val);
+                onDragPick(c.key, val);
+              }}
+              onClick={(e) => { e.stopPropagation(); openCategory(c.key); }}
+              title={val || undefined}
+              style={{
+                flex: 1, minWidth: 0, cursor: val ? "grab" : "pointer",
+                padding: "6px 8px", borderLeft: i > 0 ? `1px solid ${COLORS.line}` : "none",
+                background: open && activeKey === c.key ? "rgba(255,255,255,0.05)" : "transparent",
+              }}
+            >
+              <div style={{ fontSize: 9, color: COLORS.faint, letterSpacing: 0.3, whiteSpace: "nowrap", overflow: "hidden" }}>{c.label}</div>
+              <div style={{
+                fontSize: 12.5, color: val ? c.color : COLORS.muted, marginTop: 1,
+                whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+              }}>
+                {val || "Any"}
+              </div>
+            </div>
+          );
+        })}
+        <div style={{ display: "flex", alignItems: "center", padding: "0 8px", flexShrink: 0 }}>
+          <ChevronDown size={14} color={COLORS.faint} />
         </div>
-        <ChevronDown size={14} color={COLORS.faint} />
       </div>
+
       {open && (
         <div style={{
           position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 40,
           background: COLORS.panel2, border: `1px solid ${COLORS.line}`, borderRadius: 8,
           boxShadow: "0 12px 28px rgba(0,0,0,0.45)", overflow: "hidden",
         }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 8px", borderBottom: `1px solid ${COLORS.line}` }}>
-            <Search size={13} color={COLORS.faint} />
-            <input
-              autoFocus
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Type to filter…"
-              style={{ flex: 1, background: "transparent", border: "none", outline: "none", color: COLORS.text, fontSize: 12 }}
-            />
-          </div>
-          <div style={{ maxHeight: 200, overflowY: "auto" }}>
-            {ordered.length === 0 && <div style={{ padding: 10, fontSize: 12, color: COLORS.faint }}>No matches</div>}
-            {ordered.map((o) => (
-              <div
-                key={o}
-                draggable
-                onDragStart={(e) => {
-                  e.dataTransfer.setData("application/json", JSON.stringify({ kind: tone, value: o }));
-                  onDragPick && onDragPick(o);
-                  setOpen(false);
-                }}
-                onClick={() => { onPick(o); setOpen(false); setQuery(""); }}
-                style={{
-                  padding: "8px 10px", fontSize: 13, cursor: "pointer", color: COLORS.text,
-                  borderBottom: `1px solid ${COLORS.lineSoft}`,
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.04)")}
-                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-              >
-                {o}
+          {!active ? (
+            <div>
+              {categories.map((c) => (
+                <div
+                  key={c.key}
+                  onClick={() => openCategory(c.key)}
+                  style={{
+                    padding: "10px 12px", fontSize: 13, cursor: "pointer", color: COLORS.text,
+                    borderBottom: `1px solid ${COLORS.lineSoft}`, display: "flex",
+                    justifyContent: "space-between", gap: 8, minWidth: 0,
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.04)")}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                >
+                  <span style={{ flexShrink: 0 }}>{c.label}</span>
+                  <span style={{ color: COLORS.faint, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {selVal[c.key] || "Any"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 8px", borderBottom: `1px solid ${COLORS.line}` }}>
+                <button
+                  onClick={() => setActiveKey(null)}
+                  title="Back"
+                  style={{ background: "transparent", border: "none", color: COLORS.faint, cursor: "pointer", fontSize: 14, padding: "0 2px", flexShrink: 0 }}
+                >
+                  {"\u2190"}
+                </button>
+                <Search size={13} color={COLORS.faint} style={{ flexShrink: 0 }} />
+                <input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder={`Filter ${active.label.toLowerCase()}\u2026`}
+                  style={{ flex: 1, minWidth: 0, background: "transparent", border: "none", outline: "none", color: COLORS.text, fontSize: 12 }}
+                />
               </div>
-            ))}
-          </div>
+              <div style={{ maxHeight: 200, overflowY: "auto" }}>
+                {ordered.length === 0 && <div style={{ padding: 10, fontSize: 12, color: COLORS.faint }}>No matches</div>}
+                {ordered.map((o) => (
+                  <div
+                    key={o}
+                    draggable
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData("application/json", JSON.stringify({ kind: active.key, value: o }));
+                      onDragPick(active.key, o);
+                      setOpen(false); setActiveKey(null);
+                    }}
+                    onTouchStart={(e) => {
+                      if (!onTouchDragStart) return;
+                      onTouchDragStart(e, active.key, o);
+                      onDragPick(active.key, o);
+                      setOpen(false); setActiveKey(null);
+                    }}
+                    onClick={() => { onPick(active.key, o); setOpen(false); setActiveKey(null); setQuery(""); }}
+                    style={{
+                      padding: "8px 10px", fontSize: 13, cursor: "pointer", color: COLORS.text,
+                      borderBottom: `1px solid ${COLORS.lineSoft}`, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.04)")}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                  >
+                    {o}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -585,12 +675,12 @@ function EditEventModal({ ev, allLocations, allTypes, allWorkers, allApprovers, 
 
   return (
     <div style={overlayStyle} onClick={onClose}>
-      <div style={{ ...modalStyle, width: 420 }} onClick={(e) => e.stopPropagation()}>
-        <div style={modalHeaderStyle}>
+      <div style={{ ...modalStyle, width: 420, maxHeight: "90vh", display: "flex", flexDirection: "column" }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ ...modalHeaderStyle, flexShrink: 0 }}>
           <span>Edit work block</span>
           <X size={16} style={{ cursor: "pointer" }} onClick={onClose} />
         </div>
-        <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12, overflowY: "auto", minHeight: 0 }}>
           <div style={{ display: "flex", gap: 10 }}>
             <div style={{ flex: 1 }}>
               <label style={labelStyle}>Start time</label>
@@ -717,7 +807,7 @@ function EditEventModal({ ev, allLocations, allTypes, allWorkers, allApprovers, 
             </div>
           </div>
         </div>
-        <div style={{ display: "flex", justifyContent: "space-between", padding: "12px 16px", borderTop: `1px solid ${COLORS.line}` }}>
+        <div style={{ display: "flex", justifyContent: "space-between", padding: "12px 16px", borderTop: `1px solid ${COLORS.line}`, flexShrink: 0 }}>
           <button onClick={() => onDelete(ev.id)} style={dangerBtnStyle}><Trash2 size={13} /> Delete</button>
           <div style={{ display: "flex", gap: 8 }}>
             <button onClick={onClose} style={ghostBtnStyle}>Cancel</button>
@@ -803,12 +893,12 @@ function ConfigModal({ users, setUsers, locations, setLocations, workTypes, setW
 
   return (
     <div style={overlayStyle} onClick={onClose}>
-      <div style={{ ...modalStyle, width: 620 }} onClick={(e) => e.stopPropagation()}>
-        <div style={modalHeaderStyle}>
+      <div style={{ ...modalStyle, width: 620, maxHeight: "90vh", display: "flex", flexDirection: "column" }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ ...modalHeaderStyle, flexShrink: 0 }}>
           <span>Configuration</span>
           <X size={16} style={{ cursor: "pointer" }} onClick={onClose} />
         </div>
-        <div style={{ display: "flex", gap: 4, padding: "10px 16px 0" }}>
+        <div style={{ display: "flex", gap: 4, padding: "10px 16px 0", flexShrink: 0 }}>
           {["users", "locations", "types", "approvals", "view"].map((t) => (
             <button key={t} onClick={() => setTab(t)}
               style={{
@@ -819,7 +909,7 @@ function ConfigModal({ users, setUsers, locations, setLocations, workTypes, setW
               }}>{t}</button>
           ))}
         </div>
-        <div style={{ padding: 16, maxHeight: 420, overflowY: "auto" }}>
+        <div style={{ padding: 16, overflowY: "auto", minHeight: 0, flex: 1 }}>
           {tab === "users" && (
             <div>
               <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
@@ -1093,9 +1183,9 @@ function ExportModal({ events, requiredApprovers, onClose }) {
 
   return (
     <div style={overlayStyle} onClick={onClose}>
-      <div style={{ ...modalStyle, width: 480 }} onClick={(e) => e.stopPropagation()}>
-        <div style={modalHeaderStyle}><span>Export schedule</span><X size={16} style={{ cursor: "pointer" }} onClick={onClose} /></div>
-        <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ ...modalStyle, width: 480, maxHeight: "90vh", display: "flex", flexDirection: "column" }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ ...modalHeaderStyle, flexShrink: 0 }}><span>Export schedule</span><X size={16} style={{ cursor: "pointer" }} onClick={onClose} /></div>
+        <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12, overflowY: "auto", minHeight: 0 }}>
           <div style={{ display: "flex", gap: 10 }}>
             <div style={{ flex: 1 }}><label style={labelStyle}>From</label><input type="date" value={from} onChange={(e) => setFrom(e.target.value)} style={inputStyle} /></div>
             <div style={{ flex: 1 }}><label style={labelStyle}>To</label><input type="date" value={to} onChange={(e) => setTo(e.target.value)} style={inputStyle} /></div>
@@ -1171,12 +1261,12 @@ function BulkImportModal({ onImport, onClose }) {
 
   return (
     <div style={overlayStyle} onClick={onClose}>
-      <div style={{ ...modalStyle, width: 540 }} onClick={(e) => e.stopPropagation()}>
-        <div style={modalHeaderStyle}>
+      <div style={{ ...modalStyle, width: 540, maxHeight: "90vh", display: "flex", flexDirection: "column" }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ ...modalHeaderStyle, flexShrink: 0 }}>
           <span>Bulk add work blocks</span>
           <X size={16} style={{ cursor: "pointer" }} onClick={onClose} />
         </div>
-        <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 10, overflowY: "auto", minHeight: 0 }}>
           <div style={{ fontSize: 11, color: COLORS.faint }}>
             Paste a JSON array of blocks. Each item needs <code>date</code> ("YYYY-MM-DD"),{" "}
             <code>start</code> ("HH:MM", 24-hour) and <code>duration</code> (minutes).{" "}
@@ -1203,7 +1293,7 @@ function BulkImportModal({ onImport, onClose }) {
             </div>
           )}
         </div>
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, padding: "12px 16px", borderTop: `1px solid ${COLORS.line}` }}>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, padding: "12px 16px", borderTop: `1px solid ${COLORS.line}`, flexShrink: 0 }}>
           <button onClick={onClose} style={ghostBtnStyle}>Close</button>
           <button onClick={runImport} style={primaryBtnStyle}><Plus size={13} /> Import</button>
         </div>
@@ -1618,29 +1708,31 @@ function WorkSchedulePlanner() {
   useEffect(() => { setColWidths(null); }, [days.length]);
 
   function startColResize(e, index) {
-    if (e.button !== 0) return;
+    if (e.button !== undefined && e.button !== 0 && e.pointerType !== "touch") return;
     e.preventDefault();
     e.stopPropagation();
     const widths = colWidths
       ? [...colWidths]
       : days.map((d) => colRefs.current[d]?.getBoundingClientRect().width || 160);
     dividerDrag.current = { index, startX: e.clientX, widths };
-    document.addEventListener("mousemove", onColResizeMove);
-    document.addEventListener("mouseup", onColResizeEnd);
+    document.addEventListener("pointermove", onColResizeMove);
+    document.addEventListener("pointerup", onColResizeEnd);
+    document.addEventListener("pointercancel", onColResizeEnd);
   }
   function onColResizeMove(e) {
     const dd = dividerDrag.current;
     if (!dd) return;
     const dx = e.clientX - dd.startX;
-    const minW = 70;
+    const minW = MIN_COL_WIDTH;
     const next = [...dd.widths];
     next[dd.index] = Math.max(minW, dd.widths[dd.index] + dx);
     setColWidths(next);
   }
   function onColResizeEnd() {
     dividerDrag.current = null;
-    document.removeEventListener("mousemove", onColResizeMove);
-    document.removeEventListener("mouseup", onColResizeEnd);
+    document.removeEventListener("pointermove", onColResizeMove);
+    document.removeEventListener("pointerup", onColResizeEnd);
+    document.removeEventListener("pointercancel", onColResizeEnd);
   }
 
   function bumpRecent(kind, value) {
@@ -1683,15 +1775,16 @@ function WorkSchedulePlanner() {
   function snap(m) { return Math.round(m / SNAP) * SNAP; }
 
   // ---- drop on column background: create new ----
-  function handleColDrop(e, date) {
-    e.preventDefault();
-    let payload;
-    try { payload = JSON.parse(e.dataTransfer.getData("application/json")); } catch { return; }
+  // Shared by both native HTML5 drag-and-drop (desktop) and the touch-drag
+  // implementation below (mobile — HTML5 DnD never fires from touch input,
+  // so dragging a selector onto the calendar silently did nothing on
+  // phones/tablets until this existed).
+  function applyDropOnColumn(payload, date, clientY) {
     if (!payload) return;
     const col = colRefs.current[date];
     if (!col) return;
     const rect = col.getBoundingClientRect();
-    const y = e.clientY - rect.top;
+    const y = clientY - rect.top;
     const minutesFromTop = (y / HOUR_PX) * 60 - peekHours * 60;
     const start = snap(minutesFromTop);
     createEvent({
@@ -1701,16 +1794,75 @@ function WorkSchedulePlanner() {
       worker: payload.kind === "worker" ? payload.value : null,
     });
   }
+  function applyDropOnBlock(payload, ev) {
+    if (!payload) return;
+    if (payload.kind === "loc" && !ev.locations.includes(payload.value)) updateEvent(ev.id, { locations: [...ev.locations, payload.value] });
+    if (payload.kind === "type" && !ev.types.includes(payload.value)) updateEvent(ev.id, { types: [...ev.types, payload.value] });
+    if (payload.kind === "worker" && !ev.workers.includes(payload.value)) updateEvent(ev.id, { workers: [...ev.workers, payload.value] });
+  }
+  function handleColDrop(e, date) {
+    e.preventDefault();
+    let payload;
+    try { payload = JSON.parse(e.dataTransfer.getData("application/json")); } catch { return; }
+    applyDropOnColumn(payload, date, e.clientY);
+  }
   // ---- drop directly on an existing block: add-to ----
   function handleBlockDrop(e, ev) {
     e.preventDefault();
     e.stopPropagation();
     let payload;
     try { payload = JSON.parse(e.dataTransfer.getData("application/json")); } catch { return; }
-    if (!payload) return;
-    if (payload.kind === "loc" && !ev.locations.includes(payload.value)) updateEvent(ev.id, { locations: [...ev.locations, payload.value] });
-    if (payload.kind === "type" && !ev.types.includes(payload.value)) updateEvent(ev.id, { types: [...ev.types, payload.value] });
-    if (payload.kind === "worker" && !ev.workers.includes(payload.value)) updateEvent(ev.id, { workers: [...ev.workers, payload.value] });
+    applyDropOnBlock(payload, ev);
+  }
+
+  // ---- touch drag: selector box/list item -> calendar ----
+  // HTML5 drag-and-drop (draggable + onDragStart/onDrop) is mouse-only; no
+  // major mobile browser fires those events for touch. This reimplements
+  // just enough of it by hand: track the touch, tell a tap from a drag by
+  // movement distance, and on release use elementFromPoint to find whatever
+  // day column or block the finger is actually over.
+  const touchDragRef = useRef(null);
+  const [touchDragGhost, setTouchDragGhost] = useState(null);
+
+  function startTouchDragSource(e, kind, value) {
+    if (!value) return;
+    const t = e.touches[0];
+    touchDragRef.current = { kind, value, startX: t.clientX, startY: t.clientY, dragging: false };
+    document.addEventListener("touchmove", onTouchDragMove, { passive: false });
+    document.addEventListener("touchend", onTouchDragEnd);
+    document.addEventListener("touchcancel", onTouchDragEnd);
+  }
+  function onTouchDragMove(e) {
+    const td = touchDragRef.current;
+    if (!td) return;
+    const t = e.touches[0];
+    if (!td.dragging) {
+      const dist = Math.hypot(t.clientX - td.startX, t.clientY - td.startY);
+      if (dist < 10) return; // still could be a tap — don't hijack scrolling/tapping yet
+      td.dragging = true;
+    }
+    e.preventDefault(); // now we're sure it's a drag — stop the page from scrolling under the finger
+    setTouchDragGhost({ x: t.clientX, y: t.clientY, label: td.value });
+  }
+  function onTouchDragEnd(e) {
+    const td = touchDragRef.current;
+    touchDragRef.current = null;
+    setTouchDragGhost(null);
+    document.removeEventListener("touchmove", onTouchDragMove);
+    document.removeEventListener("touchend", onTouchDragEnd);
+    document.removeEventListener("touchcancel", onTouchDragEnd);
+    if (!td || !td.dragging) return; // it was just a tap — the normal onClick handles selecting it
+    const t = e.changedTouches[0];
+    const payload = { kind: td.kind, value: td.value };
+    const el = document.elementFromPoint(t.clientX, t.clientY);
+    if (!el) return;
+    const blockEl = el.closest("[data-event-id]");
+    if (blockEl) {
+      const targetEv = events.find((x) => x.id === blockEl.getAttribute("data-event-id"));
+      if (targetEv) { applyDropOnBlock(payload, targetEv); return; }
+    }
+    const colEl = el.closest("[data-day-column]");
+    if (colEl) applyDropOnColumn(payload, colEl.getAttribute("data-day-column"), t.clientY);
   }
 
   // ---- selection ----
@@ -1858,9 +2010,10 @@ function WorkSchedulePlanner() {
     <div style={{ background: COLORS.bg, color: COLORS.text, fontFamily: "system-ui, sans-serif", height: "100%", minHeight: 640, display: "flex", flexDirection: "column", borderRadius: 12, overflow: "hidden", border: `1px solid ${COLORS.line}` }}>
       {/* top bar */}
       <div style={{ padding: "12px 16px", borderBottom: `1px solid ${COLORS.line}`, display: "flex", flexDirection: "column", gap: 10 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{ fontSize: 15, fontWeight: 700, letterSpacing: 0.2, marginRight: 6 }}>Field Schedule</div>
-          {isSnapshotMode ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", rowGap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+            <div style={{ fontSize: 15, fontWeight: 700, letterSpacing: 0.2, marginRight: 6 }}>Field Schedule</div>
+            {isSnapshotMode ? (
             <span
               title="This is an offline copy — nothing here is sent anywhere automatically. Use the Export button when you're done to send your changes back."
               style={{
@@ -1901,11 +2054,12 @@ function WorkSchedulePlanner() {
               {apiAvailable ? "\u25CF Synced" : "\u25CB Local only"}
             </span>
           )}
-          {snapshotError && (
-            <span style={{ fontSize: 10, color: COLORS.danger }}>{snapshotError}</span>
-          )}
+            {snapshotError && (
+              <span style={{ fontSize: 10, color: COLORS.danger }}>{snapshotError}</span>
+            )}
+          </div>
 
-          <div style={{ display: "flex", alignItems: "center", gap: 6, marginLeft: "auto" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginLeft: "auto", flexWrap: "wrap", rowGap: 6 }}>
             <CalendarRange size={14} color={COLORS.faint} />
             <input type="date" value={rangeStart} onChange={(e) => setRangeStart(e.target.value)} style={{ ...inputStyle, width: 132 }} />
             <span style={{ color: COLORS.faint, fontSize: 12 }}>for</span>
@@ -1917,31 +2071,39 @@ function WorkSchedulePlanner() {
             </span>
           </div>
 
-          <div style={{ display: "flex", alignItems: "center", gap: 6, borderLeft: `1px solid ${COLORS.line}`, paddingLeft: 10, marginLeft: 4 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, borderLeft: `1px solid ${COLORS.line}`, paddingLeft: 10, marginLeft: 4, flexShrink: 0 }}>
             {currentUser.isApprover ? <ShieldCheck size={14} color={COLORS.accent} /> : <ShieldOff size={14} color={COLORS.faint} />}
             <select value={currentUserId} onChange={(e) => setCurrentUserId(e.target.value)} style={{ ...inputStyle, width: 150 }}>
               {users.map((u) => <option key={u.id} value={u.id}>{u.alias}</option>)}
             </select>
           </div>
 
-          <IconBtn title="Bulk add work blocks (JSON)" onClick={() => setBulkImportOpen(true)}><Plus size={16} /></IconBtn>
-          <IconBtn
-            title={snapshotBusy ? "Building offline copy\u2026" : "Download an offline copy (view/edit without server access)"}
-            onClick={downloadStandaloneSnapshot}
-          >
-            {snapshotBusy ? <span style={{ fontSize: 10 }}>{"\u2026"}</span> : <OfflineIcon size={15} />}
-          </IconBtn>
-          <IconBtn title="Export" onClick={() => setExportOpen(true)}><Download size={16} /></IconBtn>
-          <IconBtn title="Configuration" onClick={() => setConfigOpen(true)}><Settings size={16} /></IconBtn>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+            <IconBtn title="Bulk add work blocks (JSON)" onClick={() => setBulkImportOpen(true)}><Plus size={16} /></IconBtn>
+            <IconBtn
+              title={snapshotBusy ? "Building offline copy\u2026" : "Download an offline copy (view/edit without server access)"}
+              onClick={downloadStandaloneSnapshot}
+            >
+              {snapshotBusy ? <span style={{ fontSize: 10 }}>{"\u2026"}</span> : <OfflineIcon size={15} />}
+            </IconBtn>
+            <IconBtn title="Export" onClick={() => setExportOpen(true)}><Download size={16} /></IconBtn>
+            <IconBtn title="Configuration" onClick={() => setConfigOpen(true)}><Settings size={16} /></IconBtn>
+          </div>
         </div>
 
-        <div style={{ display: "flex", gap: 10 }}>
-          <SelectorBox label="LOCATION" tone="loc" options={locationNames} value={selVal.loc} recents={recents.loc}
-            onPick={(v) => pick("loc", v)} onDragPick={(v) => bumpRecent("loc", v)} />
-          <SelectorBox label="TYPE" tone="type" options={typeNames} value={selVal.type} recents={recents.type}
-            onPick={(v) => pick("type", v)} onDragPick={(v) => bumpRecent("type", v)} />
-          <SelectorBox label="WORKER" tone="worker" options={workerNames} value={selVal.worker} recents={recents.worker}
-            onPick={(v) => pick("worker", v)} onDragPick={(v) => bumpRecent("worker", v)} />
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", rowGap: 8 }}>
+          <CombinedSelectorBox
+            categories={[
+              { key: "loc", label: "LOCATION", color: "#7FB8E0", options: locationNames },
+              { key: "type", label: "TYPE", color: COLORS.amber, options: typeNames },
+              { key: "worker", label: "WORKER", color: "#B79AE0", options: workerNames },
+            ]}
+            selVal={selVal}
+            recents={recents}
+            onPick={(kind, v) => pick(kind, v)}
+            onDragPick={(kind, v) => bumpRecent(kind, v)}
+            onTouchDragStart={startTouchDragSource}
+          />
 
           <div style={{ display: "flex", gap: 8, marginLeft: 8 }}>
             <button
@@ -1994,24 +2156,32 @@ function WorkSchedulePlanner() {
                 return { id: ev.id, start: rel, end: rel + ev.duration };
               })
             );
-            const colStyle = colWidths
-              ? { width: colWidths[dayIdx], flex: "0 0 auto" }
-              : { flex: "1 1 0", minWidth: 0 };
+            const colStyle = (() => {
+              const maxLanes = Object.values(overlapLayout).reduce((m, l) => Math.max(m, l.laneCount), 1);
+              const requiredWidth = Math.max(MIN_COL_WIDTH, maxLanes * MIN_LANE_WIDTH);
+              return colWidths
+                ? { width: Math.max(colWidths[dayIdx], requiredWidth), flex: "0 0 auto" }
+                : { flex: "1 1 0", minWidth: requiredWidth };
+            })();
             return (
               <div key={date} style={{ ...colStyle, borderRight: `1px solid ${COLORS.line}`, position: "relative" }}>
                 <div style={{ height: 34, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, color: COLORS.muted, borderBottom: `1px solid ${COLORS.line}`, position: "sticky", top: 0, background: COLORS.bg, zIndex: 4 }}>
                   {fmtDateShort(date)}
+                  <div
+                    onPointerDown={(e) => startColResize(e, dayIdx)}
+                    title="Drag to resize column"
+                    style={{
+                      position: "absolute", top: 0, right: -16, width: 32, height: "100%",
+                      cursor: "col-resize", zIndex: 6, touchAction: "none",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                    }}
+                  >
+                    <div style={{ width: 6, height: 28, borderRadius: 3, background: COLORS.line }} />
+                  </div>
                 </div>
                 <div
-                  onMouseDown={(e) => startColResize(e, dayIdx)}
-                  title="Drag to resize column"
-                  style={{
-                    position: "absolute", top: 0, right: -4, width: 9, height: 34,
-                    cursor: "col-resize", zIndex: 6,
-                  }}
-                />
-                <div
                   ref={(el) => { colRefs.current[date] = el; }}
+                  data-day-column={date}
                   onDragOver={(e) => e.preventDefault()}
                   onDrop={(e) => handleColDrop(e, date)}
                   onMouseDown={(e) => startMarquee(e, date)}
@@ -2051,6 +2221,7 @@ function WorkSchedulePlanner() {
                     return (
                       <div
                         key={ev.id + "_" + date}
+                        data-event-id={ev.id}
                         onDragOver={(e) => e.preventDefault()}
                         onDrop={(e) => handleBlockDrop(e, ev)}
                         onMouseDown={(e) => startMove(e, ev, "move")}
@@ -2065,11 +2236,11 @@ function WorkSchedulePlanner() {
                           boxSizing: "border-box", zIndex: selected ? 3 : 2,
                         }}
                       >
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                          <span style={{ color: COLORS.faint, fontVariantNumeric: "tabular-nums" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "nowrap", gap: 4 }}>
+                          <span style={{ color: COLORS.faint, fontVariantNumeric: "tabular-nums", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
                             {isHomeDay ? minsToLabel(ev.startMinutes) : "\u22EF continued"}
                           </span>
-                          <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 3, flexShrink: 0, flexWrap: "nowrap", whiteSpace: "nowrap" }}>
                             {hasNotes && (
                               <span title="Has notes" style={{ fontSize: 8.5, fontWeight: 700, color: COLORS.amber, border: `1px solid ${COLORS.amber}77`, borderRadius: 3, padding: "0 3px", lineHeight: "11px" }}>N</span>
                             )}
@@ -2077,7 +2248,7 @@ function WorkSchedulePlanner() {
                               <span title="Has links" style={{ fontSize: 8.5, fontWeight: 700, color: "#7FB8E0", border: "1px solid #7FB8E077", borderRadius: 3, padding: "0 3px", lineHeight: "11px" }}>L</span>
                             )}
                             <Info
-                              size={10} color={COLORS.faint} style={{ cursor: "pointer" }}
+                              size={10} color={COLORS.faint} style={{ cursor: "pointer", flexShrink: 0 }}
                               onMouseEnter={(e) => {
                                 if (isTouchDevice) return;
                                 const corner = e.clientX < window.innerWidth / 2 ? "bottom-right" : "bottom-left";
@@ -2086,7 +2257,7 @@ function WorkSchedulePlanner() {
                               onMouseLeave={() => { if (!isTouchDevice) scheduleCloseInfoPopup(); }}
                               onClick={(e) => { e.stopPropagation(); if (isTouchDevice) setEditingId(ev.id); }}
                             />
-                            <Pencil size={10} style={{ cursor: "pointer", color: COLORS.faint }} onClick={(e) => { e.stopPropagation(); setEditingId(ev.id); }} />
+                            <Pencil size={10} style={{ cursor: "pointer", color: COLORS.faint, flexShrink: 0 }} onClick={(e) => { e.stopPropagation(); setEditingId(ev.id); }} />
                           </div>
                         </div>
                         <div style={{ display: "flex", flexWrap: "wrap", marginTop: 2 }}>
@@ -2145,6 +2316,20 @@ function WorkSchedulePlanner() {
             setContextMenu(null);
           }}
         />
+      )}
+
+      {touchDragGhost && (
+        <div
+          style={{
+            position: "fixed", left: touchDragGhost.x, top: touchDragGhost.y - 36, zIndex: 200,
+            transform: "translate(-50%, -50%)", pointerEvents: "none",
+            background: COLORS.panel2, border: `1px solid ${COLORS.accent}`, borderRadius: 8,
+            padding: "6px 10px", fontSize: 12, color: COLORS.text, whiteSpace: "nowrap",
+            boxShadow: "0 8px 20px rgba(0,0,0,0.5)",
+          }}
+        >
+          {touchDragGhost.label}
+        </div>
       )}
 
       {infoPopup && (() => {

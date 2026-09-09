@@ -48,6 +48,17 @@ const OfflineIcon = makeIcon("\u{1F4BE}");
 // ---------- constants ----------
 const HOUR_PX = 52;
 const PEEK_HOURS_MIN = 2;
+// Day columns never shrink narrower than this — chosen so a block's time
+// label + N/L badges + info/edit icons always fit on one line without
+// wrapping. On a narrow phone this means the calendar goes wider than the
+// screen and scrolls horizontally instead of squeezing blocks unreadable;
+// that trade-off is intentional.
+const MIN_COL_WIDTH = 148;
+// Minimum width a single lane needs — same reasoning, but applied per lane:
+// when blocks overlap and split a column into side-by-side lanes, each lane
+// needs this much room on its own, so a column with N overlapping blocks
+// needs to be at least N * MIN_LANE_WIDTH wide, not just MIN_COL_WIDTH.
+const MIN_LANE_WIDTH = 140;
 const PEEK_HOURS_MAX = 10;
 const DAY_MIN = 1440;
 const SNAP = 15;
@@ -630,83 +641,139 @@ function Chip({
 }
 
 // ---------- Selector box (location / type / worker) ----------
-function SelectorBox({
-  label,
-  tone,
-  options,
-  value,
+// A single compact control standing in for what used to be three separate
+// Location/Type/Worker boxes side by side. Each is now a narrow "chip" in
+// one row — tap a chip to jump straight into that category's filtered list,
+// or tap empty space in the box to see all three categories first. This is
+// what actually saves the horizontal room those three full-width boxes
+// needed, which three individually-narrower-but-still-separate boxes
+// wouldn't have fixed on small phone screens.
+function CombinedSelectorBox({
+  categories,
+  selVal,
   recents,
   onPick,
-  onDragPick
+  onDragPick,
+  onTouchDragStart
 }) {
   const [open, setOpen] = useState(false);
+  const [activeKey, setActiveKey] = useState(null); // null = category chooser view
   const [query, setQuery] = useState("");
   const ref = useRef(null);
   useEffect(() => {
     function handler(e) {
-      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+      if (ref.current && !ref.current.contains(e.target)) {
+        setOpen(false);
+        setActiveKey(null);
+        setQuery("");
+      }
     }
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
+  const active = categories.find(c => c.key === activeKey);
   const ordered = useMemo(() => {
+    if (!active) return [];
     const q = query.trim().toLowerCase();
-    const base = [...options];
+    const rec = recents[active.key] || [];
+    const base = [...active.options];
     base.sort((a, b) => {
-      const ra = recents.indexOf(a),
-        rb = recents.indexOf(b);
-      const ia = ra === -1 ? 999 : ra,
-        ib = rb === -1 ? 999 : rb;
-      return ia - ib;
+      const ra = rec.indexOf(a),
+        rb = rec.indexOf(b);
+      return (ra === -1 ? 999 : ra) - (rb === -1 ? 999 : rb);
     });
     return q ? base.filter(o => o.toLowerCase().includes(q)) : base;
-  }, [options, recents, query]);
-  const toneColor = tone === "loc" ? "#7FB8E0" : tone === "type" ? COLORS.amber : "#B79AE0";
+  }, [active, query, recents]);
+  function openCategory(key) {
+    setActiveKey(key);
+    setOpen(true);
+    setQuery("");
+  }
   return /*#__PURE__*/React.createElement("div", {
     ref: ref,
     style: {
       position: "relative",
       flex: 1,
-      minWidth: 150
+      minWidth: 240
     }
   }, /*#__PURE__*/React.createElement("div", {
-    draggable: !!value,
-    onDragStart: e => {
-      if (!value) return;
-      e.dataTransfer.setData("application/json", JSON.stringify({
-        kind: tone,
-        value
-      }));
-      onDragPick && onDragPick(value);
+    onClick: () => {
+      setOpen(o => !o);
+      setActiveKey(null);
     },
-    onClick: () => setOpen(o => !o),
+    style: {
+      display: "flex",
+      alignItems: "stretch",
+      gap: 2,
+      border: `1px solid ${open ? COLORS.accent : COLORS.line}`,
+      borderRadius: 8,
+      background: COLORS.panel2,
+      cursor: "pointer",
+      userSelect: "none",
+      overflow: "hidden"
+    }
+  }, categories.map((c, i) => {
+    const val = selVal[c.key];
+    return /*#__PURE__*/React.createElement("div", {
+      key: c.key,
+      draggable: !!val,
+      onDragStart: e => {
+        if (!val) return;
+        e.stopPropagation();
+        e.dataTransfer.setData("application/json", JSON.stringify({
+          kind: c.key,
+          value: val
+        }));
+        onDragPick(c.key, val);
+      },
+      onTouchStart: e => {
+        if (!val || !onTouchDragStart) return;
+        e.stopPropagation();
+        onTouchDragStart(e, c.key, val);
+        onDragPick(c.key, val);
+      },
+      onClick: e => {
+        e.stopPropagation();
+        openCategory(c.key);
+      },
+      title: val || undefined,
+      style: {
+        flex: 1,
+        minWidth: 0,
+        cursor: val ? "grab" : "pointer",
+        padding: "6px 8px",
+        borderLeft: i > 0 ? `1px solid ${COLORS.line}` : "none",
+        background: open && activeKey === c.key ? "rgba(255,255,255,0.05)" : "transparent"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 9,
+        color: COLORS.faint,
+        letterSpacing: 0.3,
+        whiteSpace: "nowrap",
+        overflow: "hidden"
+      }
+    }, c.label), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12.5,
+        color: val ? c.color : COLORS.muted,
+        marginTop: 1,
+        whiteSpace: "nowrap",
+        overflow: "hidden",
+        textOverflow: "ellipsis"
+      }
+    }, val || "Any"));
+  }), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
-      justifyContent: "space-between",
-      border: `1px solid ${open ? toneColor : COLORS.line}`,
-      borderRadius: 8,
-      padding: "8px 10px",
-      background: COLORS.panel2,
-      cursor: value ? "grab" : "pointer",
-      userSelect: "none"
+      padding: "0 8px",
+      flexShrink: 0
     }
-  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 10,
-      color: COLORS.faint,
-      letterSpacing: 0.3
-    }
-  }, label), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 13,
-      color: value ? toneColor : COLORS.muted,
-      marginTop: 1
-    }
-  }, value || "Select…")), /*#__PURE__*/React.createElement(ChevronDown, {
+  }, /*#__PURE__*/React.createElement(ChevronDown, {
     size: 14,
     color: COLORS.faint
-  })), open && /*#__PURE__*/React.createElement("div", {
+  }))), open && /*#__PURE__*/React.createElement("div", {
     style: {
       position: "absolute",
       top: "calc(100% + 4px)",
@@ -719,7 +786,35 @@ function SelectorBox({
       boxShadow: "0 12px 28px rgba(0,0,0,0.45)",
       overflow: "hidden"
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, !active ? /*#__PURE__*/React.createElement("div", null, categories.map(c => /*#__PURE__*/React.createElement("div", {
+    key: c.key,
+    onClick: () => openCategory(c.key),
+    style: {
+      padding: "10px 12px",
+      fontSize: 13,
+      cursor: "pointer",
+      color: COLORS.text,
+      borderBottom: `1px solid ${COLORS.lineSoft}`,
+      display: "flex",
+      justifyContent: "space-between",
+      gap: 8,
+      minWidth: 0
+    },
+    onMouseEnter: e => e.currentTarget.style.background = "rgba(255,255,255,0.04)",
+    onMouseLeave: e => e.currentTarget.style.background = "transparent"
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      flexShrink: 0
+    }
+  }, c.label), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: COLORS.faint,
+      minWidth: 0,
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace: "nowrap"
+    }
+  }, selVal[c.key] || "Any")))) : /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
@@ -727,16 +822,31 @@ function SelectorBox({
       padding: "6px 8px",
       borderBottom: `1px solid ${COLORS.line}`
     }
-  }, /*#__PURE__*/React.createElement(Search, {
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => setActiveKey(null),
+    title: "Back",
+    style: {
+      background: "transparent",
+      border: "none",
+      color: COLORS.faint,
+      cursor: "pointer",
+      fontSize: 14,
+      padding: "0 2px",
+      flexShrink: 0
+    }
+  }, "\u2190"), /*#__PURE__*/React.createElement(Search, {
     size: 13,
-    color: COLORS.faint
+    color: COLORS.faint,
+    style: {
+      flexShrink: 0
+    }
   }), /*#__PURE__*/React.createElement("input", {
-    autoFocus: true,
     value: query,
     onChange: e => setQuery(e.target.value),
-    placeholder: "Type to filter…",
+    placeholder: `Filter ${active.label.toLowerCase()}\u2026`,
     style: {
       flex: 1,
+      minWidth: 0,
       background: "transparent",
       border: "none",
       outline: "none",
@@ -759,15 +869,24 @@ function SelectorBox({
     draggable: true,
     onDragStart: e => {
       e.dataTransfer.setData("application/json", JSON.stringify({
-        kind: tone,
+        kind: active.key,
         value: o
       }));
-      onDragPick && onDragPick(o);
+      onDragPick(active.key, o);
       setOpen(false);
+      setActiveKey(null);
+    },
+    onTouchStart: e => {
+      if (!onTouchDragStart) return;
+      onTouchDragStart(e, active.key, o);
+      onDragPick(active.key, o);
+      setOpen(false);
+      setActiveKey(null);
     },
     onClick: () => {
-      onPick(o);
+      onPick(active.key, o);
       setOpen(false);
+      setActiveKey(null);
       setQuery("");
     },
     style: {
@@ -775,11 +894,14 @@ function SelectorBox({
       fontSize: 13,
       cursor: "pointer",
       color: COLORS.text,
-      borderBottom: `1px solid ${COLORS.lineSoft}`
+      borderBottom: `1px solid ${COLORS.lineSoft}`,
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace: "nowrap"
     },
     onMouseEnter: e => e.currentTarget.style.background = "rgba(255,255,255,0.04)",
     onMouseLeave: e => e.currentTarget.style.background = "transparent"
-  }, o)))));
+  }, o))))));
 }
 
 // ---------- Event edit modal ----------
@@ -816,11 +938,17 @@ function EditEventModal({
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       ...modalStyle,
-      width: 420
+      width: 420,
+      maxHeight: "90vh",
+      display: "flex",
+      flexDirection: "column"
     },
     onClick: e => e.stopPropagation()
   }, /*#__PURE__*/React.createElement("div", {
-    style: modalHeaderStyle
+    style: {
+      ...modalHeaderStyle,
+      flexShrink: 0
+    }
   }, /*#__PURE__*/React.createElement("span", null, "Edit work block"), /*#__PURE__*/React.createElement(X, {
     size: 16,
     style: {
@@ -832,7 +960,9 @@ function EditEventModal({
       padding: 16,
       display: "flex",
       flexDirection: "column",
-      gap: 12
+      gap: 12,
+      overflowY: "auto",
+      minHeight: 0
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -1059,7 +1189,8 @@ function EditEventModal({
       display: "flex",
       justifyContent: "space-between",
       padding: "12px 16px",
-      borderTop: `1px solid ${COLORS.line}`
+      borderTop: `1px solid ${COLORS.line}`,
+      flexShrink: 0
     }
   }, /*#__PURE__*/React.createElement("button", {
     onClick: () => onDelete(ev.id),
@@ -1194,11 +1325,17 @@ function ConfigModal({
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       ...modalStyle,
-      width: 620
+      width: 620,
+      maxHeight: "90vh",
+      display: "flex",
+      flexDirection: "column"
     },
     onClick: e => e.stopPropagation()
   }, /*#__PURE__*/React.createElement("div", {
-    style: modalHeaderStyle
+    style: {
+      ...modalHeaderStyle,
+      flexShrink: 0
+    }
   }, /*#__PURE__*/React.createElement("span", null, "Configuration"), /*#__PURE__*/React.createElement(X, {
     size: 16,
     style: {
@@ -1209,7 +1346,8 @@ function ConfigModal({
     style: {
       display: "flex",
       gap: 4,
-      padding: "10px 16px 0"
+      padding: "10px 16px 0",
+      flexShrink: 0
     }
   }, ["users", "locations", "types", "approvals", "view"].map(t => /*#__PURE__*/React.createElement("button", {
     key: t,
@@ -1228,8 +1366,9 @@ function ConfigModal({
   }, t))), /*#__PURE__*/React.createElement("div", {
     style: {
       padding: 16,
-      maxHeight: 420,
-      overflowY: "auto"
+      overflowY: "auto",
+      minHeight: 0,
+      flex: 1
     }
   }, tab === "users" && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -1679,11 +1818,17 @@ function ExportModal({
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       ...modalStyle,
-      width: 480
+      width: 480,
+      maxHeight: "90vh",
+      display: "flex",
+      flexDirection: "column"
     },
     onClick: e => e.stopPropagation()
   }, /*#__PURE__*/React.createElement("div", {
-    style: modalHeaderStyle
+    style: {
+      ...modalHeaderStyle,
+      flexShrink: 0
+    }
   }, /*#__PURE__*/React.createElement("span", null, "Export schedule"), /*#__PURE__*/React.createElement(X, {
     size: 16,
     style: {
@@ -1695,7 +1840,9 @@ function ExportModal({
       padding: 16,
       display: "flex",
       flexDirection: "column",
-      gap: 12
+      gap: 12,
+      overflowY: "auto",
+      minHeight: 0
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -1836,11 +1983,17 @@ function BulkImportModal({
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       ...modalStyle,
-      width: 540
+      width: 540,
+      maxHeight: "90vh",
+      display: "flex",
+      flexDirection: "column"
     },
     onClick: e => e.stopPropagation()
   }, /*#__PURE__*/React.createElement("div", {
-    style: modalHeaderStyle
+    style: {
+      ...modalHeaderStyle,
+      flexShrink: 0
+    }
   }, /*#__PURE__*/React.createElement("span", null, "Bulk add work blocks"), /*#__PURE__*/React.createElement(X, {
     size: 16,
     style: {
@@ -1852,7 +2005,9 @@ function BulkImportModal({
       padding: 16,
       display: "flex",
       flexDirection: "column",
-      gap: 10
+      gap: 10,
+      overflowY: "auto",
+      minHeight: 0
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -1888,7 +2043,8 @@ function BulkImportModal({
       justifyContent: "flex-end",
       gap: 8,
       padding: "12px 16px",
-      borderTop: `1px solid ${COLORS.line}`
+      borderTop: `1px solid ${COLORS.line}`,
+      flexShrink: 0
     }
   }, /*#__PURE__*/React.createElement("button", {
     onClick: onClose,
@@ -2571,7 +2727,7 @@ function WorkSchedulePlanner() {
     setColWidths(null);
   }, [days.length]);
   function startColResize(e, index) {
-    if (e.button !== 0) return;
+    if (e.button !== undefined && e.button !== 0 && e.pointerType !== "touch") return;
     e.preventDefault();
     e.stopPropagation();
     const widths = colWidths ? [...colWidths] : days.map(d => colRefs.current[d]?.getBoundingClientRect().width || 160);
@@ -2580,22 +2736,24 @@ function WorkSchedulePlanner() {
       startX: e.clientX,
       widths
     };
-    document.addEventListener("mousemove", onColResizeMove);
-    document.addEventListener("mouseup", onColResizeEnd);
+    document.addEventListener("pointermove", onColResizeMove);
+    document.addEventListener("pointerup", onColResizeEnd);
+    document.addEventListener("pointercancel", onColResizeEnd);
   }
   function onColResizeMove(e) {
     const dd = dividerDrag.current;
     if (!dd) return;
     const dx = e.clientX - dd.startX;
-    const minW = 70;
+    const minW = MIN_COL_WIDTH;
     const next = [...dd.widths];
     next[dd.index] = Math.max(minW, dd.widths[dd.index] + dx);
     setColWidths(next);
   }
   function onColResizeEnd() {
     dividerDrag.current = null;
-    document.removeEventListener("mousemove", onColResizeMove);
-    document.removeEventListener("mouseup", onColResizeEnd);
+    document.removeEventListener("pointermove", onColResizeMove);
+    document.removeEventListener("pointerup", onColResizeEnd);
+    document.removeEventListener("pointercancel", onColResizeEnd);
   }
   function bumpRecent(kind, value) {
     setRecents(r => ({
@@ -2671,19 +2829,16 @@ function WorkSchedulePlanner() {
   }
 
   // ---- drop on column background: create new ----
-  function handleColDrop(e, date) {
-    e.preventDefault();
-    let payload;
-    try {
-      payload = JSON.parse(e.dataTransfer.getData("application/json"));
-    } catch {
-      return;
-    }
+  // Shared by both native HTML5 drag-and-drop (desktop) and the touch-drag
+  // implementation below (mobile — HTML5 DnD never fires from touch input,
+  // so dragging a selector onto the calendar silently did nothing on
+  // phones/tablets until this existed).
+  function applyDropOnColumn(payload, date, clientY) {
     if (!payload) return;
     const col = colRefs.current[date];
     if (!col) return;
     const rect = col.getBoundingClientRect();
-    const y = e.clientY - rect.top;
+    const y = clientY - rect.top;
     const minutesFromTop = y / HOUR_PX * 60 - peekHours * 60;
     const start = snap(minutesFromTop);
     createEvent({
@@ -2693,6 +2848,28 @@ function WorkSchedulePlanner() {
       type: payload.kind === "type" ? payload.value : null,
       worker: payload.kind === "worker" ? payload.value : null
     });
+  }
+  function applyDropOnBlock(payload, ev) {
+    if (!payload) return;
+    if (payload.kind === "loc" && !ev.locations.includes(payload.value)) updateEvent(ev.id, {
+      locations: [...ev.locations, payload.value]
+    });
+    if (payload.kind === "type" && !ev.types.includes(payload.value)) updateEvent(ev.id, {
+      types: [...ev.types, payload.value]
+    });
+    if (payload.kind === "worker" && !ev.workers.includes(payload.value)) updateEvent(ev.id, {
+      workers: [...ev.workers, payload.value]
+    });
+  }
+  function handleColDrop(e, date) {
+    e.preventDefault();
+    let payload;
+    try {
+      payload = JSON.parse(e.dataTransfer.getData("application/json"));
+    } catch {
+      return;
+    }
+    applyDropOnColumn(payload, date, e.clientY);
   }
   // ---- drop directly on an existing block: add-to ----
   function handleBlockDrop(e, ev) {
@@ -2704,16 +2881,74 @@ function WorkSchedulePlanner() {
     } catch {
       return;
     }
-    if (!payload) return;
-    if (payload.kind === "loc" && !ev.locations.includes(payload.value)) updateEvent(ev.id, {
-      locations: [...ev.locations, payload.value]
+    applyDropOnBlock(payload, ev);
+  }
+
+  // ---- touch drag: selector box/list item -> calendar ----
+  // HTML5 drag-and-drop (draggable + onDragStart/onDrop) is mouse-only; no
+  // major mobile browser fires those events for touch. This reimplements
+  // just enough of it by hand: track the touch, tell a tap from a drag by
+  // movement distance, and on release use elementFromPoint to find whatever
+  // day column or block the finger is actually over.
+  const touchDragRef = useRef(null);
+  const [touchDragGhost, setTouchDragGhost] = useState(null);
+  function startTouchDragSource(e, kind, value) {
+    if (!value) return;
+    const t = e.touches[0];
+    touchDragRef.current = {
+      kind,
+      value,
+      startX: t.clientX,
+      startY: t.clientY,
+      dragging: false
+    };
+    document.addEventListener("touchmove", onTouchDragMove, {
+      passive: false
     });
-    if (payload.kind === "type" && !ev.types.includes(payload.value)) updateEvent(ev.id, {
-      types: [...ev.types, payload.value]
+    document.addEventListener("touchend", onTouchDragEnd);
+    document.addEventListener("touchcancel", onTouchDragEnd);
+  }
+  function onTouchDragMove(e) {
+    const td = touchDragRef.current;
+    if (!td) return;
+    const t = e.touches[0];
+    if (!td.dragging) {
+      const dist = Math.hypot(t.clientX - td.startX, t.clientY - td.startY);
+      if (dist < 10) return; // still could be a tap — don't hijack scrolling/tapping yet
+      td.dragging = true;
+    }
+    e.preventDefault(); // now we're sure it's a drag — stop the page from scrolling under the finger
+    setTouchDragGhost({
+      x: t.clientX,
+      y: t.clientY,
+      label: td.value
     });
-    if (payload.kind === "worker" && !ev.workers.includes(payload.value)) updateEvent(ev.id, {
-      workers: [...ev.workers, payload.value]
-    });
+  }
+  function onTouchDragEnd(e) {
+    const td = touchDragRef.current;
+    touchDragRef.current = null;
+    setTouchDragGhost(null);
+    document.removeEventListener("touchmove", onTouchDragMove);
+    document.removeEventListener("touchend", onTouchDragEnd);
+    document.removeEventListener("touchcancel", onTouchDragEnd);
+    if (!td || !td.dragging) return; // it was just a tap — the normal onClick handles selecting it
+    const t = e.changedTouches[0];
+    const payload = {
+      kind: td.kind,
+      value: td.value
+    };
+    const el = document.elementFromPoint(t.clientX, t.clientY);
+    if (!el) return;
+    const blockEl = el.closest("[data-event-id]");
+    if (blockEl) {
+      const targetEv = events.find(x => x.id === blockEl.getAttribute("data-event-id"));
+      if (targetEv) {
+        applyDropOnBlock(payload, targetEv);
+        return;
+      }
+    }
+    const colEl = el.closest("[data-day-column]");
+    if (colEl) applyDropOnColumn(payload, colEl.getAttribute("data-day-column"), t.clientY);
   }
 
   // ---- selection ----
@@ -2927,7 +3162,16 @@ function WorkSchedulePlanner() {
     style: {
       display: "flex",
       alignItems: "center",
-      gap: 10
+      gap: 10,
+      flexWrap: "wrap",
+      rowGap: 8
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 10,
+      flexShrink: 0
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -2981,12 +3225,14 @@ function WorkSchedulePlanner() {
       fontSize: 10,
       color: COLORS.danger
     }
-  }, snapshotError), /*#__PURE__*/React.createElement("div", {
+  }, snapshotError)), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
       gap: 6,
-      marginLeft: "auto"
+      marginLeft: "auto",
+      flexWrap: "wrap",
+      rowGap: 6
     }
   }, /*#__PURE__*/React.createElement(CalendarRange, {
     size: 14,
@@ -3027,7 +3273,8 @@ function WorkSchedulePlanner() {
       gap: 6,
       borderLeft: `1px solid ${COLORS.line}`,
       paddingLeft: 10,
-      marginLeft: 4
+      marginLeft: 4,
+      flexShrink: 0
     }
   }, currentUser.isApprover ? /*#__PURE__*/React.createElement(ShieldCheck, {
     size: 14,
@@ -3045,7 +3292,14 @@ function WorkSchedulePlanner() {
   }, users.map(u => /*#__PURE__*/React.createElement("option", {
     key: u.id,
     value: u.id
-  }, u.alias)))), /*#__PURE__*/React.createElement(IconBtn, {
+  }, u.alias)))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 6,
+      flexShrink: 0
+    }
+  }, /*#__PURE__*/React.createElement(IconBtn, {
     title: "Bulk add work blocks (JSON)",
     onClick: () => setBulkImportOpen(true)
   }, /*#__PURE__*/React.createElement(Plus, {
@@ -3069,35 +3323,35 @@ function WorkSchedulePlanner() {
     onClick: () => setConfigOpen(true)
   }, /*#__PURE__*/React.createElement(Settings, {
     size: 16
-  }))), /*#__PURE__*/React.createElement("div", {
+  })))), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
-      gap: 10
+      gap: 10,
+      flexWrap: "wrap",
+      rowGap: 8
     }
-  }, /*#__PURE__*/React.createElement(SelectorBox, {
-    label: "LOCATION",
-    tone: "loc",
-    options: locationNames,
-    value: selVal.loc,
-    recents: recents.loc,
-    onPick: v => pick("loc", v),
-    onDragPick: v => bumpRecent("loc", v)
-  }), /*#__PURE__*/React.createElement(SelectorBox, {
-    label: "TYPE",
-    tone: "type",
-    options: typeNames,
-    value: selVal.type,
-    recents: recents.type,
-    onPick: v => pick("type", v),
-    onDragPick: v => bumpRecent("type", v)
-  }), /*#__PURE__*/React.createElement(SelectorBox, {
-    label: "WORKER",
-    tone: "worker",
-    options: workerNames,
-    value: selVal.worker,
-    recents: recents.worker,
-    onPick: v => pick("worker", v),
-    onDragPick: v => bumpRecent("worker", v)
+  }, /*#__PURE__*/React.createElement(CombinedSelectorBox, {
+    categories: [{
+      key: "loc",
+      label: "LOCATION",
+      color: "#7FB8E0",
+      options: locationNames
+    }, {
+      key: "type",
+      label: "TYPE",
+      color: COLORS.amber,
+      options: typeNames
+    }, {
+      key: "worker",
+      label: "WORKER",
+      color: "#B79AE0",
+      options: workerNames
+    }],
+    selVal: selVal,
+    recents: recents,
+    onPick: (kind, v) => pick(kind, v),
+    onDragPick: (kind, v) => bumpRecent(kind, v),
+    onTouchDragStart: startTouchDragSource
   }), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
@@ -3184,13 +3438,17 @@ function WorkSchedulePlanner() {
         end: rel + ev.duration
       };
     }));
-    const colStyle = colWidths ? {
-      width: colWidths[dayIdx],
-      flex: "0 0 auto"
-    } : {
-      flex: "1 1 0",
-      minWidth: 0
-    };
+    const colStyle = (() => {
+      const maxLanes = Object.values(overlapLayout).reduce((m, l) => Math.max(m, l.laneCount), 1);
+      const requiredWidth = Math.max(MIN_COL_WIDTH, maxLanes * MIN_LANE_WIDTH);
+      return colWidths ? {
+        width: Math.max(colWidths[dayIdx], requiredWidth),
+        flex: "0 0 auto"
+      } : {
+        flex: "1 1 0",
+        minWidth: requiredWidth
+      };
+    })();
     return /*#__PURE__*/React.createElement("div", {
       key: date,
       style: {
@@ -3212,22 +3470,34 @@ function WorkSchedulePlanner() {
         background: COLORS.bg,
         zIndex: 4
       }
-    }, fmtDateShort(date)), /*#__PURE__*/React.createElement("div", {
-      onMouseDown: e => startColResize(e, dayIdx),
+    }, fmtDateShort(date), /*#__PURE__*/React.createElement("div", {
+      onPointerDown: e => startColResize(e, dayIdx),
       title: "Drag to resize column",
       style: {
         position: "absolute",
         top: 0,
-        right: -4,
-        width: 9,
-        height: 34,
+        right: -16,
+        width: 32,
+        height: "100%",
         cursor: "col-resize",
-        zIndex: 6
+        zIndex: 6,
+        touchAction: "none",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center"
       }
-    }), /*#__PURE__*/React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        width: 6,
+        height: 28,
+        borderRadius: 3,
+        background: COLORS.line
+      }
+    }))), /*#__PURE__*/React.createElement("div", {
       ref: el => {
         colRefs.current[date] = el;
       },
+      "data-day-column": date,
       onDragOver: e => e.preventDefault(),
       onDrop: e => handleColDrop(e, date),
       onMouseDown: e => startMarquee(e, date),
@@ -3298,6 +3568,7 @@ function WorkSchedulePlanner() {
       const hasLinks = !!(ev.links && ev.links.length > 0);
       return /*#__PURE__*/React.createElement("div", {
         key: ev.id + "_" + date,
+        "data-event-id": ev.id,
         onDragOver: e => e.preventDefault(),
         onDrop: e => handleBlockDrop(e, ev),
         onMouseDown: e => startMove(e, ev, "move"),
@@ -3325,18 +3596,27 @@ function WorkSchedulePlanner() {
         style: {
           display: "flex",
           justifyContent: "space-between",
-          alignItems: "flex-start"
+          alignItems: "flex-start",
+          flexWrap: "nowrap",
+          gap: 4
         }
       }, /*#__PURE__*/React.createElement("span", {
         style: {
           color: COLORS.faint,
-          fontVariantNumeric: "tabular-nums"
+          fontVariantNumeric: "tabular-nums",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+          minWidth: 0
         }
       }, isHomeDay ? minsToLabel(ev.startMinutes) : "\u22EF continued"), /*#__PURE__*/React.createElement("div", {
         style: {
           display: "flex",
           alignItems: "center",
-          gap: 3
+          gap: 3,
+          flexShrink: 0,
+          flexWrap: "nowrap",
+          whiteSpace: "nowrap"
         }
       }, hasNotes && /*#__PURE__*/React.createElement("span", {
         title: "Has notes",
@@ -3364,7 +3644,8 @@ function WorkSchedulePlanner() {
         size: 10,
         color: COLORS.faint,
         style: {
-          cursor: "pointer"
+          cursor: "pointer",
+          flexShrink: 0
         },
         onMouseEnter: e => {
           if (isTouchDevice) return;
@@ -3382,7 +3663,8 @@ function WorkSchedulePlanner() {
         size: 10,
         style: {
           cursor: "pointer",
-          color: COLORS.faint
+          color: COLORS.faint,
+          flexShrink: 0
         },
         onClick: e => {
           e.stopPropagation();
@@ -3482,7 +3764,24 @@ function WorkSchedulePlanner() {
       });
       setContextMenu(null);
     }
-  }), infoPopup && (() => {
+  }), touchDragGhost && /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "fixed",
+      left: touchDragGhost.x,
+      top: touchDragGhost.y - 36,
+      zIndex: 200,
+      transform: "translate(-50%, -50%)",
+      pointerEvents: "none",
+      background: COLORS.panel2,
+      border: `1px solid ${COLORS.accent}`,
+      borderRadius: 8,
+      padding: "6px 10px",
+      fontSize: 12,
+      color: COLORS.text,
+      whiteSpace: "nowrap",
+      boxShadow: "0 8px 20px rgba(0,0,0,0.5)"
+    }
+  }, touchDragGhost.label), infoPopup && (() => {
     const popupEvent = events.find(e => e.id === infoPopup.id);
     if (!popupEvent) return null;
     return /*#__PURE__*/React.createElement(BlockInfoPopup, {
