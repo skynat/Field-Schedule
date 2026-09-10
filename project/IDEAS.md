@@ -52,3 +52,10 @@ a new independent schedule, with no server reconfiguration.
 
 None of this needs answering now — just flagging the shape of the
 decisions for whenever this gets picked up.
+
+
+# Future idea: will whant a priority system use a S to F ranking system.
+
+# Future idea: and also will whant email ingtgration for users 
+
+
