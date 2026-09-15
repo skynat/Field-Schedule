@@ -14,6 +14,12 @@ is a much worse bug than it sounds like.
 CLI usage (see migrate.py for the actual entry point):
     python migrate.py            # apply anything pending
     python migrate.py --check    # exit 1 if anything is pending, apply nothing
+
+NOTE: this runner is intentionally generic over *which* migrations folder
+it applies — it's used for both the per-calendar schedule databases
+(migrations/) and the top-level catalog database (catalog_migrations/),
+by passing a different `migrations_dir` in. Same versioning/tracking
+behavior either way, just pointed at a different db file and folder.
 """
 
 import sqlite3
@@ -31,8 +37,8 @@ def _ensure_tracking_table(db):
     """)
 
 
-def _migration_files():
-    return sorted(MIGRATIONS_DIR.glob("*.sql"))
+def _migration_files(migrations_dir):
+    return sorted(Path(migrations_dir).glob("*.sql"))
 
 
 def applied_versions(db_path):
@@ -41,19 +47,19 @@ def applied_versions(db_path):
         return {row[0] for row in db.execute("SELECT version FROM schema_migrations")}
 
 
-def pending_migrations(db_path):
+def pending_migrations(db_path, migrations_dir=MIGRATIONS_DIR):
     applied = applied_versions(db_path)
-    return [f.stem for f in _migration_files() if f.stem not in applied]
+    return [f.stem for f in _migration_files(migrations_dir) if f.stem not in applied]
 
 
-def run_migrations(db_path):
+def run_migrations(db_path, migrations_dir=MIGRATIONS_DIR):
     """Applies any migration files not yet recorded as applied. Returns the
     list of versions that were newly applied (empty if already up to date)."""
     newly_applied = []
     with sqlite3.connect(db_path) as db:
         _ensure_tracking_table(db)
         applied = {row[0] for row in db.execute("SELECT version FROM schema_migrations")}
-        for f in _migration_files():
+        for f in _migration_files(migrations_dir):
             version = f.stem
             if version in applied:
                 continue

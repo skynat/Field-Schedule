@@ -14,9 +14,17 @@ project/
 │   ├── react.production.min.js
 │   ├── react-dom.production.min.js
 │   └── xlsx.full.min.js
-└── server/              optional Flask + SQLite backend
-    ├── app.py
-    ├── schema.sql
+├── nav/                  folder-tree navigator (multi-calendar mode's site root)
+│   ├── index.html
+│   └── nav.js
+└── server/
+    ├── app.py            standalone entry point — ONE schedule (unchanged from before)
+    ├── main.py           multi-calendar entry point — folder tree of MANY schedules
+    ├── calendar_app.py   the actual Flask routes, as create_app(db_path) — used by both
+    ├── catalog_db.py      the folder/calendar tree's own tiny database
+    ├── catalog_routes.py  REST API for the tree (used only by main.py)
+    ├── migrations/         schema for a calendar's schedule.db
+    ├── catalog_migrations/ schema for the tree's catalog.db
     └── requirements.txt
 ```
 
@@ -118,6 +126,76 @@ during development (e.g. frontend on `:8000` via http.server, API on
 `:5000` via Flask), set `SCHEDULE_DEV_CORS=1` when starting `app.py` so the
 browser's cross-origin fetches are allowed. Leave it unset for the normal
 single-origin setup above — you don't want open CORS in production.
+
+## Multiple calendars (folder-tree mode)
+
+`app.py` gives you one schedule. `server/main.py` gives you a folder tree
+— like a filesystem — where you create folders to organize things and
+calendars inside those folders, and each calendar is its own completely
+independent schedule (own users/locations/events, own SQLite file).
+
+```
+cd project/server
+pip install -r requirements.txt
+python main.py
+```
+
+Open `http://localhost:5000` — you land on a folder browser instead of a
+calendar. Click "New folder" / "New calendar" to build out a tree
+(`Acme Corp / Field Ops / September`, etc.), click a folder to go into it,
+click a calendar to open it. Opening a calendar for the first time is
+what creates its SQLite file — creating the calendar *entry* in the tree
+only registers its name and where its file will live, not the file
+itself, so sketching out a folder structure doesn't litter disk with
+empty `.db` files for calendars nobody ever opened.
+
+Under the hood: `server/calendars/` fills up with one `<calendar_id>.db`
+per calendar you've actually opened, and `server/catalog.db` holds the
+tree structure itself (folder names, nesting, which calendar id maps to
+which filename) — a separate, much smaller database from any individual
+calendar's data, so listing/renaming/moving things in the tree is a fast
+indexed query rather than walking the filesystem. Every calendar you open
+is the exact same app.jsx/app.js/index.html as single-schedule mode,
+served at `/cal/<calendar_id>/` instead of `/` — nothing in the frontend
+had to change for this, because it already computes its own API base URL
+from wherever it was loaded from (see "How the frontend talks to the
+backend" below).
+
+**Why one calendar's lock never affects another's:** each calendar gets
+its own SQLite connection to its own file, opened only when a request for
+that specific calendar comes in — there's no shared connection or shared
+lock between calendars. Add many simultaneous editors across many
+different calendars and none of them wait on each other; the concurrency
+limits described later in this doc ("SQLite is fine at small-to-medium
+scale…") still apply *per calendar*, not across the whole tree.
+
+**Moving the catalog to Postgres later:** the catalog (the tree
+structure) is a separate concern from any calendar's own data, and is
+built with that migration path in mind — see the comments in
+`catalog_db.py`. Setting `CATALOG_DATABASE_URL` to a Postgres URL moves
+the tree there without touching `catalog_routes.py` or `main.py`;
+individual calendars stay on SQLite (a large number of small,
+mostly-independent files is exactly SQLite's sweet spot, and it's what
+keeps calendar creation cheap and dependency-free). If you eventually
+need a single calendar to handle heavier concurrent load than SQLite is
+comfortable with, that's the existing single-schedule Postgres migration
+path described later in this doc — nothing about folder-tree mode changes
+that story, it just applies per calendar instead of globally.
+
+**Deleting things:** deleting a folder deletes everything inside it,
+including every calendar's data — there's a confirmation prompt in the
+nav UI, but there's no undo, so treat it like `rm -rf`.
+
+**Multi-process deployment note:** the per-calendar Flask app cache in
+`main.py` is per-process — running multiple gunicorn workers means each
+worker builds and caches its own handles independently the first time it
+sees a given calendar, which is harmless (they all point at the same
+on-disk file) but means the very first request to a brand-new calendar
+could theoretically race across two workers. In practice this only
+matters in the sub-second window right after a calendar's first-ever
+open; `calendar_app.init_db()`'s migration runner is safe to call
+concurrently (it's the same `schema_migrations`-tracked, safe-to-re-run
+system the single-schedule app already relies on for `python app.py`).
 
 ## Rebuilding after editing app.jsx
 
