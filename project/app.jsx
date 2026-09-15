@@ -36,7 +36,15 @@ const OfflineIcon = makeIcon("\u{1F4BE}");
 
 // ---------- constants ----------
 const HOUR_PX = 52;
-const PEEK_HOURS_MIN = 2;
+// The grid used to peek a variable number of hours (2-10, based on how far
+// any block overflowed past midnight) into the adjacent day so long blocks
+// wouldn't get clipped. Fixed at 3 hours on each side of midnight instead —
+// a firm scroll limit rather than one that grows with the data. A block
+// that overflows further than that still exists and still saves correctly;
+// it just won't fully render past the 3-hour peek. See MIDNIGHT_BAR_PX
+// below for the marker drawn at each of these two boundaries.
+const PEEK_HOURS_MIN = 3;
+const PEEK_HOURS_MAX = 3;
 // Day columns never shrink narrower than this — chosen so a block's time
 // label + N/L badges + info/edit icons always fit on one line without
 // wrapping. On a narrow phone this means the calendar goes wider than the
@@ -48,10 +56,12 @@ const MIN_COL_WIDTH = 148;
 // needs this much room on its own, so a column with N overlapping blocks
 // needs to be at least N * MIN_LANE_WIDTH wide, not just MIN_COL_WIDTH.
 const MIN_LANE_WIDTH = 140;
-const PEEK_HOURS_MAX = 10;
 const DAY_MIN = 1440;
 const SNAP = 15;
 const MIN_DUR = 30;
+// Height of the "beginning/end of day" marker bar drawn across each day
+// column exactly at midnight (see the calendar grid render below).
+const MIDNIGHT_BAR_PX = 5;
 
 const COLORS = {
   bg: "#12161B",
@@ -68,6 +78,12 @@ const COLORS = {
   danger: "#D9705F",
   block: "#2D3844",
   blockBorder: "#3C4956",
+  // Bright white used specifically for icons/text inside the calendar grid
+  // itself (time gutter, day headers, event-block labels/icons) — kept as
+  // its own token, separate from COLORS.text, since it's a deliberate,
+  // higher-contrast choice for just that part of the UI, not a global
+  // palette change.
+  calText: "#FFFFFF",
 };
 
 const uid = (p) => `${p}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -170,6 +186,70 @@ function minsToLabel(mins) {
   const m = ((mins % 60) + 60) % 60;
   return hmLabel(h, m);
 }
+// ---------- UTC (storage) <-> local wall-clock (everything in this UI) ----------
+// The API/database store every event's `date` + `startMinutes` as UTC wall-
+// clock fields (see server/calendar_app.py) — a UTC calendar date and a
+// count of minutes since UTC midnight. That's deliberate: it's the one
+// unambiguous way to store a wall-clock time such that every viewer, in
+// every timezone, can convert it to what THEY should see, rather than the
+// stored value silently meaning "whatever timezone happened to create it."
+//
+// Inside this component, though, `events` in React state — and everything
+// downstream of it (the grid's pixel math, drag/resize, exports, the
+// offline snapshot) — is kept in LOCAL wall-clock fields, exactly as it
+// always was. That's what makes the rest of this file (all the pixel <->
+// minutes math below) need zero changes: it was already written in terms
+// of "whatever timezone the numbers are in," so as long as we convert at
+// the two points where data crosses the network — apiEventToLocal() right
+// after a GET/fetch, localWallToUTCFields() right before any POST/PUT —
+// everything in between stays correct without touching it.
+//
+// Simplification: this converts using the browser's current UTC offset at
+// the moment of conversion (via the native Date object), same as the rest
+// of this app avoids pulling in a timezone library. The one edge case this
+// doesn't special-case is a wall-clock time that falls exactly in the
+// repeated/skipped hour of a DST transition in the viewer's own zone — a
+// few-minutes-a-year ambiguity not worth the added complexity here.
+function localWallToUTCFields(dateISO, minutes) {
+  const d = new Date(dateISO + "T00:00:00");
+  d.setMinutes(d.getMinutes() + minutes);
+  return {
+    date: `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`,
+    startMinutes: d.getUTCHours() * 60 + d.getUTCMinutes(),
+  };
+}
+function utcFieldsToLocal(dateISO, minutes) {
+  const [y, mo, da] = dateISO.split("-").map(Number);
+  const d = new Date(Date.UTC(y, mo - 1, da));
+  d.setUTCMinutes(d.getUTCMinutes() + minutes);
+  return {
+    date: isoDate(d), // local getters — this IS the point
+    startMinutes: d.getHours() * 60 + d.getMinutes(),
+  };
+}
+// Applied to every event coming FROM the API (initial load) before it ever
+// touches React state.
+function apiEventToLocal(ev) {
+  if (!ev || ev.date == null || ev.startMinutes == null) return ev;
+  const local = utcFieldsToLocal(ev.date, ev.startMinutes);
+  return { ...ev, date: local.date, startMinutes: local.startMinutes };
+}
+// Applied to a local-wall-clock patch/body right before it's sent TO the
+// API (create or update). Only touches date/startMinutes if the caller is
+// actually changing one of them — a resize's {duration}-only patch, or an
+// approval's {approvedBy}-only patch, pass through completely untouched.
+function localPatchToApiBody(currentLocalEvent, patch) {
+  const body = { ...patch };
+  if ("date" in patch || "startMinutes" in patch) {
+    const mergedDate = "date" in patch ? patch.date : currentLocalEvent.date;
+    const mergedMinutes = "startMinutes" in patch ? patch.startMinutes : currentLocalEvent.startMinutes;
+    const utc = localWallToUTCFields(mergedDate, mergedMinutes);
+    body.date = utc.date;
+    body.startMinutes = utc.startMinutes;
+  }
+  return body;
+}
+
 // Events are authored in the browser's local timezone. These helpers turn an
 // event's (date, startMinutes) into a real absolute Date instant, so exports
 // can be re-rendered either in local time or UTC without changing what
@@ -1530,7 +1610,9 @@ function WorkSchedulePlanner() {
         setLocations(l);
         setWorkTypes(t);
         setRequiredApprovers(ra);
-        setEvents(ev);
+        // The API hands back UTC wall-clock fields; convert to local here,
+        // once, right as data enters this component — see apiEventToLocal.
+        setEvents(ev.map(apiEventToLocal));
       }
     })();
     return () => { cancelled = true; };
@@ -1749,7 +1831,10 @@ function WorkSchedulePlanner() {
   }
   function updateEvent(id, patch) {
     updateEventLocal(id, patch);
-    if (!isSnapshotMode) trackedApiRequest("PUT", `/events/${id}`, patch);
+    if (isSnapshotMode) return;
+    const current = events.find((e) => e.id === id);
+    if (!current) return;
+    trackedApiRequest("PUT", `/events/${id}`, localPatchToApiBody(current, patch));
   }
   function deleteEvent(id) {
     setEvents((evs) => evs.filter((e) => e.id !== id));
@@ -1765,7 +1850,9 @@ function WorkSchedulePlanner() {
     };
     setEvents((evs) => [...evs, localEvent]);
     if (!isSnapshotMode) {
-      trackedApiRequest("POST", "/events", localEvent).then((created) => {
+      // localEvent is entirely in local wall-clock fields (it came from a
+      // pixel position on the grid); convert before it goes over the wire.
+      trackedApiRequest("POST", "/events", localPatchToApiBody(localEvent, localEvent)).then((created) => {
         if (created && created.id && created.id !== localEvent.id) {
           setEvents((evs) => evs.map((e) => e.id === localEvent.id ? { ...e, id: created.id } : e));
         }
@@ -1919,7 +2006,12 @@ function WorkSchedulePlanner() {
   }
   function onMoveEnd() {
     const ms = moveState.current;
-    if (ms && ms.lastPatch && !isSnapshotMode) trackedApiRequest("PUT", `/events/${ms.id}`, ms.lastPatch);
+    if (ms && ms.lastPatch && !isSnapshotMode) {
+      // ms.lastPatch is in local wall-clock fields (built from pixel deltas
+      // during the drag) — same conversion as any other write path.
+      const current = events.find((e) => e.id === ms.id) || { date: ms.origDate, startMinutes: ms.origStart };
+      trackedApiRequest("PUT", `/events/${ms.id}`, localPatchToApiBody(current, ms.lastPatch));
+    }
     moveState.current = null;
     document.removeEventListener("mousemove", onMoveDrag);
     document.removeEventListener("mouseup", onMoveEnd);
@@ -2137,7 +2229,7 @@ function WorkSchedulePlanner() {
             <div style={{ height: 34, borderBottom: `1px solid ${COLORS.line}` }} />
             <div style={{ position: "relative", height: totalHeight }}>
               {hourMarks.map((h) => (
-                <div key={h} style={{ position: "absolute", top: (h + peekHours) * HOUR_PX - 6, right: 6, fontSize: 10, color: COLORS.faint, fontVariantNumeric: "tabular-nums" }}>
+                <div key={h} style={{ position: "absolute", top: (h + peekHours) * HOUR_PX - 6, right: 6, fontSize: 10, color: COLORS.calText, fontVariantNumeric: "tabular-nums" }}>
                   {minsToLabel(((h % 24) + 24) % 24 * 60)}
                 </div>
               ))}
@@ -2165,7 +2257,7 @@ function WorkSchedulePlanner() {
             })();
             return (
               <div key={date} style={{ ...colStyle, borderRight: `1px solid ${COLORS.line}`, position: "relative" }}>
-                <div style={{ height: 34, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, color: COLORS.muted, borderBottom: `1px solid ${COLORS.line}`, position: "sticky", top: 0, background: COLORS.bg, zIndex: 4 }}>
+                <div style={{ height: 34, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, color: COLORS.calText, borderBottom: `1px solid ${COLORS.line}`, position: "sticky", top: 0, background: COLORS.bg, zIndex: 4 }}>
                   {fmtDateShort(date)}
                   <div
                     onPointerDown={(e) => startColResize(e, dayIdx)}
@@ -2199,9 +2291,25 @@ function WorkSchedulePlanner() {
                       opacity: h < 0 || h >= 24 ? 0.5 : 1,
                     }} />
                   ))}
-                  {/* peek shading for adjacent days */}
+                  {/* peek shading for adjacent days (limited to a fixed 3 hours — see PEEK_HOURS_MIN/MAX) */}
                   <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: peekHours * HOUR_PX, background: "rgba(0,0,0,0.25)", pointerEvents: "none" }} />
                   <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: peekHours * HOUR_PX, background: "rgba(0,0,0,0.25)", pointerEvents: "none" }} />
+                  {/* midnight markers — a white/black "caution bar" across the top and
+                      bottom of the day, sitting right on the start-of-day/end-of-day
+                      boundary, so it's unmistakable where today actually begins and
+                      ends versus the shaded peek into the adjacent day. */}
+                  <div style={{
+                    position: "absolute", left: 0, right: 0, top: peekHours * HOUR_PX - MIDNIGHT_BAR_PX / 2,
+                    height: MIDNIGHT_BAR_PX, zIndex: 1, pointerEvents: "none",
+                    background: "repeating-linear-gradient(135deg, #FFFFFF 0 8px, #0A0D10 8px 16px)",
+                    boxShadow: "0 0 0 1px #0A0D10",
+                  }} />
+                  <div style={{
+                    position: "absolute", left: 0, right: 0, top: (peekHours + 24) * HOUR_PX - MIDNIGHT_BAR_PX / 2,
+                    height: MIDNIGHT_BAR_PX, zIndex: 1, pointerEvents: "none",
+                    background: "repeating-linear-gradient(135deg, #FFFFFF 0 8px, #0A0D10 8px 16px)",
+                    boxShadow: "0 0 0 1px #0A0D10",
+                  }} />
 
                   {dayEvents.map((ev) => {
                     const rel = (epochDay(ev.date) - epochDay(date)) * 1440 + ev.startMinutes;
@@ -2237,7 +2345,7 @@ function WorkSchedulePlanner() {
                         }}
                       >
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "nowrap", gap: 4 }}>
-                          <span style={{ color: COLORS.faint, fontVariantNumeric: "tabular-nums", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+                          <span style={{ color: COLORS.calText, fontVariantNumeric: "tabular-nums", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
                             {isHomeDay ? minsToLabel(ev.startMinutes) : "\u22EF continued"}
                           </span>
                           <div style={{ display: "flex", alignItems: "center", gap: 3, flexShrink: 0, flexWrap: "nowrap", whiteSpace: "nowrap" }}>
@@ -2248,7 +2356,7 @@ function WorkSchedulePlanner() {
                               <span title="Has links" style={{ fontSize: 8.5, fontWeight: 700, color: "#7FB8E0", border: "1px solid #7FB8E077", borderRadius: 3, padding: "0 3px", lineHeight: "11px" }}>L</span>
                             )}
                             <Info
-                              size={10} color={COLORS.faint} style={{ cursor: "pointer", flexShrink: 0 }}
+                              size={10} color={COLORS.calText} style={{ cursor: "pointer", flexShrink: 0 }}
                               onMouseEnter={(e) => {
                                 if (isTouchDevice) return;
                                 const corner = e.clientX < window.innerWidth / 2 ? "bottom-right" : "bottom-left";
@@ -2257,7 +2365,7 @@ function WorkSchedulePlanner() {
                               onMouseLeave={() => { if (!isTouchDevice) scheduleCloseInfoPopup(); }}
                               onClick={(e) => { e.stopPropagation(); if (isTouchDevice) setEditingId(ev.id); }}
                             />
-                            <Pencil size={10} style={{ cursor: "pointer", color: COLORS.faint, flexShrink: 0 }} onClick={(e) => { e.stopPropagation(); setEditingId(ev.id); }} />
+                            <Pencil size={10} style={{ cursor: "pointer", color: COLORS.calText, flexShrink: 0 }} onClick={(e) => { e.stopPropagation(); setEditingId(ev.id); }} />
                           </div>
                         </div>
                         <div style={{ display: "flex", flexWrap: "wrap", marginTop: 2 }}>
@@ -2375,7 +2483,10 @@ function WorkSchedulePlanner() {
             setEvents((evs) => [...evs, ...newEvents]);
             if (!isSnapshotMode) {
               newEvents.forEach((localEvent) => {
-                trackedApiRequest("POST", "/events", localEvent).then((created) => {
+                // Bulk-imported rows are parsed as local wall-clock time,
+                // same as anything typed into this browser — convert before
+                // sending, same as the single-event create path above.
+                trackedApiRequest("POST", "/events", localPatchToApiBody(localEvent, localEvent)).then((created) => {
                   if (created && created.id && created.id !== localEvent.id) {
                     setEvents((evs) => evs.map((e) => e.id === localEvent.id ? { ...e, id: created.id } : e));
                   }
