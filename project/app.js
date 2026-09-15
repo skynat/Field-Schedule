@@ -1071,7 +1071,13 @@ function EditEventModal({
       flexDirection: "column",
       gap: 12,
       overflowY: "auto",
-      minHeight: 0,
+      minHeight: 0
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 12,
       pointerEvents: readOnly ? "none" : "auto",
       opacity: readOnly ? 0.7 : 1
     }
@@ -1295,7 +1301,7 @@ function EditEventModal({
     }
   }, /*#__PURE__*/React.createElement(Plus, {
     size: 12
-  }), " Add link")))), /*#__PURE__*/React.createElement("div", {
+  }), " Add link"))))), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       justifyContent: "space-between",

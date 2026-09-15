@@ -767,7 +767,14 @@ function EditEventModal({ ev, allLocations, allTypes, allWorkers, allApprovers, 
           <span>{readOnly ? "View work block" : "Edit work block"}</span>
           <X size={16} style={{ cursor: "pointer" }} onClick={onClose} />
         </div>
-        <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12, overflowY: "auto", minHeight: 0, pointerEvents: readOnly ? "none" : "auto", opacity: readOnly ? 0.7 : 1 }}>
+        <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12, overflowY: "auto", minHeight: 0 }}>
+          {/* Scrolling has to stay on this outer div (pointer-events must
+              stay "auto" here or the browser can't hit-test it to scroll
+              at all, wheel or touch). The read-only lockout instead goes
+              on this inner wrapper, which has no scroll behavior of its
+              own — so viewers can still scroll the modal, just can't
+              interact with anything inside it. */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 12, pointerEvents: readOnly ? "none" : "auto", opacity: readOnly ? 0.7 : 1 }}>
           <div style={{ display: "flex", gap: 10 }}>
             <div style={{ flex: 1 }}>
               <label style={labelStyle}>Start time</label>
@@ -892,6 +899,7 @@ function EditEventModal({ ev, allLocations, allTypes, allWorkers, allApprovers, 
                 <Plus size={12} /> Add link
               </button>
             </div>
+          </div>
           </div>
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", padding: "12px 16px", borderTop: `1px solid ${COLORS.line}`, flexShrink: 0 }}>
