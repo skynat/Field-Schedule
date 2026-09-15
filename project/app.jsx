@@ -318,11 +318,17 @@ function fmtDateShort(iso) {
 
 // ---------- seed data ----------
 const seedUsers = [
-  { id: "u1", login: "jmartinez", alias: "J. Martinez", isWorker: true, isApprover: false },
-  { id: "u2", login: "asmith", alias: "A. Smith", isWorker: true, isApprover: false },
-  { id: "u3", login: "rt.chen", alias: "R. Chen", isWorker: true, isApprover: true },
-  { id: "u4", login: "dford", alias: "D. Ford", isWorker: false, isApprover: true },
-  { id: "u5", login: "kpatel", alias: "K. Patel", isWorker: true, isApprover: false },
+  { id: "u1", login: "jmartinez", alias: "J. Martinez", isWorker: true, isApprover: false, isReadOnly: false },
+  { id: "u2", login: "asmith", alias: "A. Smith", isWorker: true, isApprover: false, isReadOnly: false },
+  { id: "u3", login: "rt.chen", alias: "R. Chen", isWorker: true, isApprover: true, isReadOnly: false },
+  { id: "u4", login: "dford", alias: "D. Ford", isWorker: false, isApprover: true, isReadOnly: false },
+  { id: "u5", login: "kpatel", alias: "K. Patel", isWorker: true, isApprover: false, isReadOnly: false },
+  // Stand-in for "not logged in yet" until there's a real login system — see
+  // the currentUser fallback chain in WorkSchedulePlanner, which defaults to
+  // this user (by isReadOnly, not by id — the id here is only used for this
+  // offline/no-backend fallback list; the server-seeded read-only user has
+  // its own server-generated id).
+  { id: "u6", login: "readonly", alias: "Read Only", isWorker: false, isApprover: false, isReadOnly: true },
 ];
 const seedLocations = [
   { id: "l1", name: "North Yard" },
@@ -525,16 +531,17 @@ function eventMatchesClauses(ev, clauses) {
 }
 
 // ---------- small UI atoms ----------
-function IconBtn({ onClick, title, children, active }) {
+function IconBtn({ onClick, title, children, active, disabled }) {
   return (
     <button
-      onClick={onClick}
+      onClick={disabled ? undefined : onClick}
       title={title}
+      disabled={disabled}
       style={{
         display: "flex", alignItems: "center", justifyContent: "center",
         width: 32, height: 32, borderRadius: 7, border: `1px solid ${active ? COLORS.accent : COLORS.line}`,
         background: active ? COLORS.accentDim : "transparent", color: active ? COLORS.accent : COLORS.muted,
-        cursor: "pointer",
+        cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.4 : 1,
       }}
     >
       {children}
@@ -733,7 +740,7 @@ function CombinedSelectorBox({ categories, selVal, recents, onPick, onDragPick, 
 }
 
 // ---------- Event edit modal ----------
-function EditEventModal({ ev, allLocations, allTypes, allWorkers, allApprovers, requiredApprovers, onSave, onDelete, onClose }) {
+function EditEventModal({ ev, allLocations, allTypes, allWorkers, allApprovers, requiredApprovers, readOnly, onSave, onDelete, onClose }) {
   const [locs, setLocs] = useState(ev.locations);
   const [types, setTypes] = useState(ev.types);
   const [workers, setWorkers] = useState(ev.workers);
@@ -757,10 +764,10 @@ function EditEventModal({ ev, allLocations, allTypes, allWorkers, allApprovers, 
     <div style={overlayStyle} onClick={onClose}>
       <div style={{ ...modalStyle, width: 420, maxHeight: "90vh", display: "flex", flexDirection: "column" }} onClick={(e) => e.stopPropagation()}>
         <div style={{ ...modalHeaderStyle, flexShrink: 0 }}>
-          <span>Edit work block</span>
+          <span>{readOnly ? "View work block" : "Edit work block"}</span>
           <X size={16} style={{ cursor: "pointer" }} onClick={onClose} />
         </div>
-        <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12, overflowY: "auto", minHeight: 0 }}>
+        <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12, overflowY: "auto", minHeight: 0, pointerEvents: readOnly ? "none" : "auto", opacity: readOnly ? 0.7 : 1 }}>
           <div style={{ display: "flex", gap: 10 }}>
             <div style={{ flex: 1 }}>
               <label style={labelStyle}>Start time</label>
@@ -888,22 +895,30 @@ function EditEventModal({ ev, allLocations, allTypes, allWorkers, allApprovers, 
           </div>
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", padding: "12px 16px", borderTop: `1px solid ${COLORS.line}`, flexShrink: 0 }}>
-          <button onClick={() => onDelete(ev.id)} style={dangerBtnStyle}><Trash2 size={13} /> Delete</button>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={onClose} style={ghostBtnStyle}>Cancel</button>
-            <button
-              onClick={() => {
-                const [h, m] = start.split(":").map(Number);
-                onSave(ev.id, {
-                  locations: locs, types, workers, startMinutes: h * 60 + m, duration: Math.max(15, dur), approvedBy,
-                  notes: { format: notesFormat, content: notesContent }, links,
-                });
-              }}
-              style={primaryBtnStyle}
-            >
-              <Check size={13} /> Save
-            </button>
-          </div>
+          {readOnly ? (
+            <div style={{ display: "flex", justifyContent: "flex-end", width: "100%" }}>
+              <button onClick={onClose} style={ghostBtnStyle}>Close</button>
+            </div>
+          ) : (
+            <>
+              <button onClick={() => onDelete(ev.id)} style={dangerBtnStyle}><Trash2 size={13} /> Delete</button>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={onClose} style={ghostBtnStyle}>Cancel</button>
+                <button
+                  onClick={() => {
+                    const [h, m] = start.split(":").map(Number);
+                    onSave(ev.id, {
+                      locations: locs, types, workers, startMinutes: h * 60 + m, duration: Math.max(15, dur), approvedBy,
+                      notes: { format: notesFormat, content: notesContent }, links,
+                    });
+                  }}
+                  style={primaryBtnStyle}
+                >
+                  <Check size={13} /> Save
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -1663,9 +1678,22 @@ function WorkSchedulePlanner() {
   const [rangeStart, setRangeStart] = useState(monday);
   const [rangeDays, setRangeDays] = useState(7);
 
-  const [currentUserId, setCurrentUserId] = useState("u4");
-  const currentUser = users.find((u) => u.id === currentUserId) || users[0]
-    || { id: null, login: "", alias: "(no users yet)", isWorker: false, isApprover: false };
+  // No real login system yet (see README's "Login: SAML 2.0"), so there's
+  // no identity to default currentUserId to until one exists. Instead of
+  // hardcoding a user id (which only ever matched the offline seed data,
+  // never a server-assigned id), fall back by ROLE: prefer the read-only
+  // stand-in user, then whoever's first alphabetically, so a fresh load
+  // always lands on "can look, can't touch" rather than accidentally
+  // defaulting to a real approver's identity. Once someone actually picks
+  // a name from the dropdown, currentUserId holds a real id and this
+  // fallback chain stops mattering (the exact match wins) — this is only
+  // ever consulted on first load or if the previously-selected id
+  // disappears (e.g. that user was deleted).
+  const [currentUserId, setCurrentUserId] = useState("");
+  const currentUser = users.find((u) => u.id === currentUserId)
+    || users.find((u) => u.isReadOnly)
+    || users[0]
+    || { id: null, login: "", alias: "(no users yet)", isWorker: false, isApprover: false, isReadOnly: true };
 
   const [configOpen, setConfigOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
@@ -1829,7 +1857,16 @@ function WorkSchedulePlanner() {
   function updateEventLocal(id, patch) {
     setEvents((evs) => evs.map((e) => (e.id === id ? { ...e, ...patch } : e)));
   }
+  // Every write path for events funnels through one of these three
+  // functions (create/update/delete) — guarding here, before any local
+  // state change or API call, is what makes read-only enforcement actually
+  // safe rather than just a UI nicety: even a stray call from somewhere
+  // that forgot to check currentUser.isReadOnly itself still can't mutate
+  // anything. (There's no real auth yet — see README's "Login: SAML 2.0" —
+  // so this is a client-side guardrail, not a security boundary; the
+  // backend doesn't (yet) reject writes from a read-only user's browser.)
   function updateEvent(id, patch) {
+    if (currentUser.isReadOnly) return;
     updateEventLocal(id, patch);
     if (isSnapshotMode) return;
     const current = events.find((e) => e.id === id);
@@ -1837,12 +1874,14 @@ function WorkSchedulePlanner() {
     trackedApiRequest("PUT", `/events/${id}`, localPatchToApiBody(current, patch));
   }
   function deleteEvent(id) {
+    if (currentUser.isReadOnly) return;
     setEvents((evs) => evs.filter((e) => e.id !== id));
     setSelectedIds((s) => { const n = new Set(s); n.delete(id); return n; });
     setEditingId(null);
     if (!isSnapshotMode) trackedApiRequest("DELETE", `/events/${id}`);
   }
   function createEvent({ date, startMinutes, loc, type, worker }) {
+    if (currentUser.isReadOnly) return;
     const localEvent = {
       id: uid("ev"), date, startMinutes: snap(startMinutes), duration: MIN_DUR,
       locations: loc ? [loc] : [], types: type ? [type] : [], workers: worker ? [worker] : [], approvedBy: [],
@@ -1961,6 +2000,7 @@ function WorkSchedulePlanner() {
     });
   }
   function approveSelected(val) {
+    if (currentUser.isReadOnly || !currentUser.isApprover) return;
     const name = currentUser.alias;
     setEvents((evs) => evs.map((e) => {
       if (!selectedIds.has(e.id)) return e;
@@ -1975,6 +2015,7 @@ function WorkSchedulePlanner() {
 
   // ---- pointer-based move / resize ----
   function startMove(e, ev, mode) {
+    if (currentUser.isReadOnly) return;
     if (e.button !== 0) return; // left click only — middle button is reserved for panning
     e.stopPropagation();
     e.preventDefault();
@@ -2165,13 +2206,28 @@ function WorkSchedulePlanner() {
 
           <div style={{ display: "flex", alignItems: "center", gap: 6, borderLeft: `1px solid ${COLORS.line}`, paddingLeft: 10, marginLeft: 4, flexShrink: 0 }}>
             {currentUser.isApprover ? <ShieldCheck size={14} color={COLORS.accent} /> : <ShieldOff size={14} color={COLORS.faint} />}
-            <select value={currentUserId} onChange={(e) => setCurrentUserId(e.target.value)} style={{ ...inputStyle, width: 150 }}>
+            <select value={currentUser.id || ""} onChange={(e) => setCurrentUserId(e.target.value)} style={{ ...inputStyle, width: 150 }}>
               {users.map((u) => <option key={u.id} value={u.id}>{u.alias}</option>)}
             </select>
+            {currentUser.isReadOnly && (
+              <span
+                title="This user can look but can't create, edit, or approve anything. There's no login system yet — pick a different name above to act as someone else."
+                style={{
+                  fontSize: 10, padding: "2px 7px", borderRadius: 10, color: COLORS.amber,
+                  border: `1px solid ${COLORS.amber}55`, whiteSpace: "nowrap",
+                }}
+              >
+                {"\u{1F441} Read-only"}
+              </span>
+            )}
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-            <IconBtn title="Bulk add work blocks (JSON)" onClick={() => setBulkImportOpen(true)}><Plus size={16} /></IconBtn>
+            <IconBtn
+              title={currentUser.isReadOnly ? "Bulk add work blocks — not available in read-only mode" : "Bulk add work blocks (JSON)"}
+              disabled={currentUser.isReadOnly}
+              onClick={() => setBulkImportOpen(true)}
+            ><Plus size={16} /></IconBtn>
             <IconBtn
               title={snapshotBusy ? "Building offline copy\u2026" : "Download an offline copy (view/edit without server access)"}
               onClick={downloadStandaloneSnapshot}
@@ -2179,7 +2235,11 @@ function WorkSchedulePlanner() {
               {snapshotBusy ? <span style={{ fontSize: 10 }}>{"\u2026"}</span> : <OfflineIcon size={15} />}
             </IconBtn>
             <IconBtn title="Export" onClick={() => setExportOpen(true)}><Download size={16} /></IconBtn>
-            <IconBtn title="Configuration" onClick={() => setConfigOpen(true)}><Settings size={16} /></IconBtn>
+            <IconBtn
+              title={currentUser.isReadOnly ? "Configuration — not available in read-only mode" : "Configuration"}
+              disabled={currentUser.isReadOnly}
+              onClick={() => setConfigOpen(true)}
+            ><Settings size={16} /></IconBtn>
           </div>
         </div>
 
@@ -2279,6 +2339,7 @@ function WorkSchedulePlanner() {
                   onMouseDown={(e) => startMarquee(e, date)}
                   onContextMenu={(e) => {
                     e.preventDefault();
+                    if (currentUser.isReadOnly) return; // nothing to create/assign here for a read-only viewer
                     const rect = colRefs.current[date].getBoundingClientRect();
                     const minutesFromTop = ((e.clientY - rect.top) / HOUR_PX) * 60 - peekHours * 60;
                     setContextMenu({ x: e.clientX, y: e.clientY, date, startMinutes: minutesFromTop });
@@ -2458,13 +2519,14 @@ function WorkSchedulePlanner() {
           allLocations={locationNames} allTypes={typeNames} allWorkers={workerNames}
           allApprovers={users.filter((u) => u.isApprover).map((u) => u.alias)}
           requiredApprovers={requiredApprovers}
+          readOnly={currentUser.isReadOnly}
           onSave={(id, patch) => { updateEvent(id, patch); setEditingId(null); }}
           onDelete={deleteEvent}
           onClose={() => setEditingId(null)}
         />
       )}
 
-      {configOpen && (
+      {configOpen && !currentUser.isReadOnly && (
         <ConfigModal
           users={users} setUsers={setUsersSynced}
           locations={locations} setLocations={setLocationsSynced}
@@ -2477,9 +2539,10 @@ function WorkSchedulePlanner() {
 
       {exportOpen && <ExportModal events={events} requiredApprovers={requiredApprovers} onClose={() => setExportOpen(false)} />}
 
-      {bulkImportOpen && (
+      {bulkImportOpen && !currentUser.isReadOnly && (
         <BulkImportModal
           onImport={(newEvents) => {
+            if (currentUser.isReadOnly) return;
             setEvents((evs) => [...evs, ...newEvents]);
             if (!isSnapshotMode) {
               newEvents.forEach((localEvent) => {

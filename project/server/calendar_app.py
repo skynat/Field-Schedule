@@ -111,15 +111,23 @@ def seed_if_empty(db):
     still empty."""
     if db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
         seed_users = [
-            ("jmartinez", "J. Martinez", 1, 0),
-            ("asmith", "A. Smith", 1, 0),
-            ("rt.chen", "R. Chen", 1, 1),
-            ("dford", "D. Ford", 0, 1),
-            ("kpatel", "K. Patel", 1, 0),
+            ("jmartinez", "J. Martinez", 1, 0, 0),
+            ("asmith", "A. Smith", 1, 0, 0),
+            ("rt.chen", "R. Chen", 1, 1, 0),
+            ("dford", "D. Ford", 0, 1, 0),
+            ("kpatel", "K. Patel", 1, 0, 0),
+            # Stand-in for "not logged in yet" until there's a real login
+            # system (see README.md "Login: SAML 2.0"). The frontend
+            # defaults to whichever user has is_read_only=1 on first load
+            # (see currentUser's fallback chain in app.jsx) rather than to
+            # a hardcoded id, since this row's actual id is server-generated.
+            ("readonly", "Read Only", 0, 0, 1),
         ]
-        for login, alias, is_worker, is_approver in seed_users:
-            db.execute("INSERT INTO users (id, login, alias, is_worker, is_approver) VALUES (?, ?, ?, ?, ?)",
-                       (new_id("u"), login, alias, is_worker, is_approver))
+        for login, alias, is_worker, is_approver, is_read_only in seed_users:
+            db.execute(
+                "INSERT INTO users (id, login, alias, is_worker, is_approver, is_read_only) VALUES (?, ?, ?, ?, ?, ?)",
+                (new_id("u"), login, alias, is_worker, is_approver, is_read_only),
+            )
 
     if db.execute("SELECT COUNT(*) FROM locations").fetchone()[0] == 0:
         for name in ["North Yard", "Warehouse 3", "Site B - Riverside", "HQ Loading Dock"]:
@@ -132,6 +140,23 @@ def seed_if_empty(db):
     row = db.execute("SELECT names FROM required_approvers WHERE id = 1").fetchone()
     if row and json.loads(row["names"]) == []:
         db.execute("UPDATE required_approvers SET names = ? WHERE id = 1", (json.dumps(["R. Chen", "D. Ford"]),))
+
+    # Backfills a read-only user onto any database that predates this column
+    # (the "users table is empty" check above only fires on a brand-new
+    # database) — runs every time, but is a no-op once one exists, so an
+    # existing calendar that's been in use for a while still ends up with a
+    # default read-only user to fall back to, not just fresh ones.
+    if db.execute("SELECT COUNT(*) FROM users WHERE is_read_only = 1").fetchone()[0] == 0:
+        login = "readonly"
+        suffix = 2
+        existing_logins = {r["login"] for r in db.execute("SELECT login FROM users")}
+        while login in existing_logins:
+            login = f"readonly{suffix}"
+            suffix += 1
+        db.execute(
+            "INSERT INTO users (id, login, alias, is_worker, is_approver, is_read_only) VALUES (?, ?, ?, 0, 0, 1)",
+            (new_id("u"), login, "Read Only"),
+        )
 
     db.commit()
 
@@ -204,6 +229,7 @@ def create_app(db_path, static_folder=None, static_url_path="", dev_cors=False):
             {
                 "id": r["id"], "login": r["login"], "alias": r["alias"],
                 "isWorker": bool(r["is_worker"]), "isApprover": bool(r["is_approver"]),
+                "isReadOnly": bool(r["is_read_only"]),
             }
             for r in rows
         ])
@@ -219,15 +245,17 @@ def create_app(db_path, static_folder=None, static_url_path="", dev_cors=False):
         db = get_db()
         try:
             db.execute(
-                "INSERT INTO users (id, login, alias, is_worker, is_approver) VALUES (?, ?, ?, ?, ?)",
-                (uid, login, alias, int(bool(body.get("isWorker", True))), int(bool(body.get("isApprover", False)))),
+                "INSERT INTO users (id, login, alias, is_worker, is_approver, is_read_only) VALUES (?, ?, ?, ?, ?, ?)",
+                (uid, login, alias, int(bool(body.get("isWorker", True))), int(bool(body.get("isApprover", False))),
+                 int(bool(body.get("isReadOnly", False)))),
             )
             db.commit()
         except sqlite3.IntegrityError:
             return bad_request(f'login "{login}" already exists')
         return jsonify({"id": uid, "login": login, "alias": alias,
                          "isWorker": bool(body.get("isWorker", True)),
-                         "isApprover": bool(body.get("isApprover", False))}), 201
+                         "isApprover": bool(body.get("isApprover", False)),
+                         "isReadOnly": bool(body.get("isReadOnly", False))}), 201
 
     @app.put("/api/users/<uid>")
     def update_user(uid):
@@ -239,11 +267,13 @@ def create_app(db_path, static_folder=None, static_url_path="", dev_cors=False):
         alias = body.get("alias", row["alias"])
         is_worker = int(bool(body.get("isWorker", row["is_worker"])))
         is_approver = int(bool(body.get("isApprover", row["is_approver"])))
-        db.execute("UPDATE users SET alias=?, is_worker=?, is_approver=? WHERE id=?",
-                   (alias, is_worker, is_approver, uid))
+        is_read_only = int(bool(body.get("isReadOnly", row["is_read_only"])))
+        db.execute("UPDATE users SET alias=?, is_worker=?, is_approver=?, is_read_only=? WHERE id=?",
+                   (alias, is_worker, is_approver, is_read_only, uid))
         db.commit()
         return jsonify({"id": uid, "login": row["login"], "alias": alias,
-                         "isWorker": bool(is_worker), "isApprover": bool(is_approver)})
+                         "isWorker": bool(is_worker), "isApprover": bool(is_approver),
+                         "isReadOnly": bool(is_read_only)})
 
     @app.delete("/api/users/<uid>")
     def delete_user(uid):
@@ -271,7 +301,7 @@ def create_app(db_path, static_folder=None, static_url_path="", dev_cors=False):
                     "INSERT INTO users (id, login, alias, is_worker, is_approver) VALUES (?, ?, ?, 1, 0)",
                     (uid, login, name),
                 )
-                created.append({"id": uid, "login": login, "alias": name, "isWorker": True, "isApprover": False})
+                created.append({"id": uid, "login": login, "alias": name, "isWorker": True, "isApprover": False, "isReadOnly": False})
             except sqlite3.IntegrityError:
                 pass  # login collision — skip quietly
         db.commit()
