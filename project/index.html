@@ -8,6 +8,23 @@
   html, body { margin: 0; padding: 0; height: 100%; background: #0A0D10; }
   #root { height: 100vh; padding: 16px; box-sizing: border-box; color: #E7EBEE; font-family: system-ui, sans-serif; }
   * { box-sizing: border-box; }
+  /* Native date/time inputs (the range-start picker on the main toolbar,
+     the two range pickers in Export, and the time picker in the edit
+     work block modal) draw their own calendar/clock icon, and browsers
+     render that icon dark by default — it doesn't pick up this page's
+     dark theme or any color set on the input itself, so on our dark
+     background it was nearly invisible. Chromium/WebKit expose it as its
+     own pseudo-element that filter can target; inverting it flips
+     dark-on-transparent to light-on-transparent, matching this page's
+     bright-white icon treatment everywhere else. (Firefox does not
+     expose an equivalent hook, so this is a no-op there — Firefox's
+     built-in indicator is already a neutral outline that reads fine on
+     dark backgrounds, unlike Chromium's solid dark glyph.) */
+  input[type="date"]::-webkit-calendar-picker-indicator,
+  input[type="time"]::-webkit-calendar-picker-indicator {
+    filter: invert(1);
+    cursor: pointer;
+  }
 </style>
 </head>
 <body>
